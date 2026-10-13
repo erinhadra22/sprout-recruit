@@ -311,8 +311,8 @@ extension Store {
                 let title = state == "delivered" ? "Message — provider-confirmed delivered"
                     : state == "user_confirmed_sent" ? "Message — user-confirmed sent" : "Call — user-confirmed completed"
                 var activity: Record = ["id": activityID, "agentId": aid, "kind": "interaction", "title": title,
-                    "body": channel == "message" ? record["body"] as? String ?? "" : "Call completion was confirmed by Erin; connection, recording and transcript were not independently verified.",
-                    "date": event["occurredAt"] ?? date, "createdAt": now, "recordedAt": now, "author": "Erin Hadra", "pinned": false,
+                    "body": channel == "message" ? record["body"] as? String ?? "" : "Call completion was confirmed by the operator; connection, recording and transcript were not independently verified.",
+                    "date": event["occurredAt"] ?? date, "createdAt": now, "recordedAt": now, "author": try operatorName(), "pinned": false,
                     "communicationId": id, "confirmationSource": event["confirmationSource"] ?? "user", "phone": phone]
                 if let providerId = providerId { activity["providerId"] = providerId }
                 try put("activities", activity)

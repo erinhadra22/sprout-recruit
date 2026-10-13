@@ -17,7 +17,7 @@ SPROUT_OUTPUT="$APP" zsh build.sh
 if find "$APP" -type f \( -name '*.sqlite*' -o -name '*.csv' -o -name '.env*' -o -name '*.p12' -o -name '*.key' \) | read -r _; then
   print -u2 'Release blocked: unexpected data or credential material in bundle.'; exit 1
 fi
-NAME="Sprout-Recruit-0.4.8-${SPROUT_ARCH:-$(uname -m)}"
+NAME="Sprout-Recruit-0.5.0-${SPROUT_ARCH:-$(uname -m)}"
 [[ "$MODE" == --preview ]] && NAME="$NAME-LOCAL-PREVIEW-NOT-NOTARIZED"
 ZIP="$OUT/$NAME.zip"
 [[ ! -e "$ZIP" ]] || { print -u2 "Output already exists: $ZIP"; exit 1; }

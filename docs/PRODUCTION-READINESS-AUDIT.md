@@ -1,38 +1,39 @@
 # Sprout Recruit production readiness audit
 
-Audit: October 13, 2026 UTC / October 12 evening America/Chicago. Build: 0.4.8 (9).
+Updated October 13, 2026. Current implementation: **0.5.0 (10)**. The earlier installed launch audit used 0.4.8 (9).
 
-**Assessment: suitable for continued supervised local testing; not yet ready for distribution to customers.** Desktop icon launch and visible workspace were verified after installation. The report identifies current defects and release gates; a passing test suite cannot establish that every possible bug is absent.
+**Assessment: implementation and fixture checks support continued supervised internal-pilot testing. Current-Mac launch and disposable-workspace recovery were observed; separate-user and second-device installation acceptance remain pending; this is not approval for broad rollout.** A passing test suite does not establish that every possible bug is absent.
 
-## October 13 pilot scope decision
+## Confirmed pilot scope
 
-Erin answered Q1–Q8: internal Sprout recruiters; core CRM/import/task/note/reviewed-draft scope; current Mac first; Codex-assisted local source builds without Apple Developer enrollment; individual external accounts in phase two; manual updates; Erin-owned private repository with Launch99 as the intended developer. See [confirmed decisions and backup recommendation](PILOT-DECISIONS.md) and [installation guide](CODEX-INSTALL.md). No pilot release is approved yet. The signed-binary gate below applies to a future prebuilt distribution, while recovery/onboarding and installation acceptance remain required for this pilot.
+Small internal Sprout recruiter pilot, one local operator per installation, current Apple Silicon Mac first. Version 1 covers contacts, CSV imports, tasks, notes, reviewed drafts and local recovery. Installation and manual updates use reviewed private-repository source with Codex assistance. No Apple Developer enrollment or prebuilt signed distribution is planned in this phase. Individual account connections, AI execution, background inbox sync, provider SMS and iPhone recording remain phase two.
+
+See [confirmed decisions](PILOT-DECISIONS.md) and [Codex installation guide](CODEX-INSTALL.md). The repository owner will arrange developer access separately. Product decisions are settled; device acceptance remains required.
 
 ## Scope and evidence
 
 Source review covered startup/WebKit, SQLite store, CSV imports, contacts/tasks/drafts, timestamps, workflows, communications and Keychain, AI outbox, local knowledge, performance reporting, Web interface, build/signing, the iPhone pilot boundary, and repository privacy. Independent bounded reviewers checked data reliability, UI behavior, and security/release controls. This was a code and regression audit, not a completed formal Codex Security scan or a penetration test.
 
-| Check | Result |
+| Check | Current evidence and limit |
 |---|---|
-| Native build | Passed on the development Apple Silicon Mac |
-| Native fixture suites | Passed: storage, imports, context, AI outbox, performance, workflows, communications, external correspondence and Telnyx receipt fixtures |
-| Web fixture tests | 34 passed, 0 failed |
-| Additional draft guards | Passed on a disposable database: editing keeps reply hold; sent ID cannot become an unsent draft |
-| Data-location fixtures | Passed fresh-install location, moved-app stability, legacy-path preservation and missing-workspace failure |
-| Desktop icon | Double-click in Finder started the exact installed executable; visible workspace read back; reopening after minimize inspected |
-| Live data readback | SQLite integrity OK; 1,048 contacts, 50 unsent drafts, 50 exact contact links and one open review task per draft |
-| Imported profile | Added to Sprout and Last imported date/time visible; linked unsent draft activity timestamp visible |
-| Live providers | No message/call/network send performed; actual delivery/recording/inbox sync remains untested |
-| Release packaging | Preview ZIP built and inspected: 48 archive members, zero private data files; release correctly refuses without Developer ID |
-| GitHub | Private repository created: erinhadra22/sprout-recruit; source publication tracked separately from pilot readiness |
+| Native implementation | 0.5.0 (10) optimized build and all native suites passed on the development Apple Silicon Mac. |
+| Native regression coverage | Storage, imports, context, AI outbox, performance, workflows, communications, external correspondence, provider receipts, onboarding, tasks, history review, schema upgrades and recovery fixtures passed. Provider fixtures do not send messages. |
+| Recovery fixtures | SQLite WAL backup, attachment/checksum validation, corrupt snapshots, interrupted restore/restart, migration, malformed JSON and unsupported-schema handling passed using disposable workspaces. Actual power failure or a physically full disk was not tested. |
+| Interface fixtures | **49 passed, 0 failed**, including onboarding, timezone display, linked-draft task editing, CSV interruption guards and recovery/history presentation. |
+| Installer fixtures | **20 passed** for source-install/update/rollback protections. These are fixtures, not a completed installation on a separate user or device. |
+| Current Desktop launch | 0.5.0 debug build launched from the Desktop icon and reopened after quitting. Selecting its existing workspace through the native folder picker resolved an observed file-open wait. The Mac locked before final optimized-bundle installation and icon verification; that final check is pending. |
+| Post-launch workspace readback | SQLite integrity OK; 1,048 contacts, 50 drafts and 50 tasks retained. Ordered stored-record hashes are identical before/after schema 0 to 1 adoption. No contact, draft or activity record was rewritten. |
+| Historical review | Read-only audit of a copy of the live workspace found **138 findings: 50 missing creation timestamps and 88 missing activity recording timestamps**. No suspected legacy-noon or reply-hold findings were reported. No timestamps or reply states were rewritten. |
+| External services | No live provider send, call, recording, inbox synchronization or account connection was validated in this work. |
+| Source publication | This report accompanies the 0.5.0 source candidate. Check [Desktop checks](https://github.com/erinhadra22/sprout-recruit/actions) for the exact candidate commit; local test evidence does not substitute for that commit’s remote result. Private handoff receipts record the publication readback. |
 
-The current 1,048 contacts exclude the 24 fictional sample records removed by separate earlier work. This audit did not delete contacts or send outreach. Earlier 1,072 counts describe that older sample-containing snapshot. Opening a profile can update its ordinary last-viewed value.
+Counts describe the stated evidence snapshots. Historical recording time cannot be recovered from an occurrence date, import time or modification time without an exact source. The history audit requests evidence review; zero findings for a check are not proof of delivery, source accuracy or absence of every defect.
 
 ## Fixes applied automatically
 
 | Area | Change and validation limit | Source |
 |---|---|---|
-| Launch and reopening | Desktop shortcut now resolves directly to the current app. Added Show Workspace and reopening support that restores minimized windows. Double-click launch was observed with the correct executable and a visible workspace. | `app/Sources/main.swift` |
+| Launch and reopening | Desktop shortcut resolves directly to the canonical app. Startup now shows a window before background database initialization, with a native picker for the existing workspace folder. Metadata validation uses POSIX file information; bundled-page checks canonicalize symlink paths to avoid a blank page. Show Workspace restores minimized windows. Debug icon launch and quit/reopen were observed; final optimized icon check is pending while the Mac is locked. | `app/Sources/main.swift` |
 | Blank display recovery | A stopped WebKit process or failed page load now presents Reload/Quit recovery instead of leaving an unexplained blank window. Recovery code compiled; forced WebKit-crash UI was not exercised. | `app/Sources/main.swift` |
 | Installed data location | Fresh installations use per-user Application Support. Existing local workspaces retain their current path through a saved pointer; a missing saved workspace fails clearly instead of silently creating an empty one. Legacy data has not been migrated. | `app/Sources/WorkspaceLocation.swift` |
 | Imported contact timestamps | Imported profiles now show first Added to Sprout and Last imported with date/time. Removed the false fixed October 2 source date. Reimports preserve the original first-import timestamp. | `app/Web/csv-import.js; app/Sources/GenericCSVImport.swift` |
@@ -45,61 +46,73 @@ The current 1,048 contacts exclude the 24 fictional sample records removed by se
 | Local privacy | Exact bundled page required at the native message bridge. Newly created data directories are private and managed database files use owner-only permissions. Existing Keychain behavior retained. | `app/Sources/main.swift; Store.swift` |
 | Build and repository hygiene | Configurable SDK/architecture/output path; clean release packaging with explicit preview mode and mandatory Developer ID/notary profile for release. Source-only Git allowlist and macOS CI added. Real contact test names and operator email fixtures replaced. | `app/build.sh; app/package-release.sh; .gitignore; .github/workflows/ci.yml` |
 
-## Work still required
+## Additional pilot work implemented in 0.5.0
 
-| ID | Priority | Area | Required completion | Owner / decision |
-|---|---|---|---|---|
-| R1 | Release blocker | Backup and restore | User backup is JSON export; no complete restore UI or tested attachment recovery. Implement a versioned archive, validation in a staging location, pre-restore SQLite backup, atomic swap and interrupted-restore recovery. Test older/newer schemas, corrupt archives, disk-full and rollback. | Engineering; recommended local snapshot defaults are in PILOT-DECISIONS.md. Portable export is deferred. |
-| R2 | Release blocker for current-workspace migration | Legacy data and Keychain migration | The working development CRM remains in app/Data. Fresh installs are stable, but a guided migration for existing installs must copy SQLite consistently, preserve knowledge references, validate counts/integrity, and preserve or reconnect path-keyed Telnyx credentials. Do not delete the old workspace until recovery is proven. | Engineering; migration is substantive work, not a one-line path change. |
-| R3 | Release blocker | Versioned upgrades | The store has seed/context migrations but no general ordered database migration/rollback framework. Establish supported upgrade paths, pre-upgrade backups, downgrade/newer-schema rejection and interrupted-upgrade tests. | Engineering. |
-| R4 | Deferred for source-build pilot | Signed and notarized binary distribution | The installed audit build is ad-hoc signed. Release script is prepared but Developer ID signing, hardened-runtime acceptance, notarization, stapling and Gatekeeper acceptance on another Mac remain unperformed. | Future binary distribution; no Apple Developer enrollment in this phase. |
-| R5 | Release blocker for other people | Operator and company onboarding | Fresh workspace settings, activity authors and several UI defaults still assume the original operator/company. Add first-run name/company/time-zone setup and use it for future attribution without rewriting historical records. | Engineering; internal Sprout onboarding confirmed. |
-| R6 | Release blocker | Clean-device acceptance | Test fresh standard-user install, first launch, quit/reopen, upgrade, app move, backup/restore, no network, denied permissions, sleep/wake, long paths, read-only disk and disk-full. Test every supported Mac architecture and OS. Current UI acceptance is on the development Mac only. | Engineering/QA; current Apple Silicon Mac first. |
-| R7 | Feature release gate | AI, calling and inbox integrations | AI remains a local request outbox; summary generation has no execution adapter. iPhone recording is a separate unverified pilot. Gmail/Messages background sync and after-hours service are not implemented. Require actual device/provider acceptance or hide unavailable capabilities from v1. | Deferred to next phase; hide unfinished capabilities from pilot. |
-| R8 | Before broader pilot | Import responsiveness and scale | CSV parsing/planning still runs synchronously on the UI callback. Move expensive work to a serial background worker with progress/cancel and measure supported limits. Do not extrapolate small-fixture timing to a 25,000-contact workload. | Engineering. |
-| R9 | Before broader pilot | Accessibility and window sizes | Visible focus and basic dialog trapping exist; complete inert-background/focus restoration, keyboard-only and VoiceOver checks, selected tab semantics and smaller display behavior. Current window minimum is 1080x720. | Engineering; target supports macOS accessibility expectations. |
-| R10 | Data review | Historical timestamp/reply evidence | Previously fabricated noon timestamps and older imported replies were not silently rewritten or replayed. Identify affected records, distinguish occurrence time from recording time, and prepare a reviewable correction plan. | Engineering; user review only if evidence cannot determine truth. |
-| R11 | Before broader pilot | User recovery for ordinary edits | Task edit/reschedule/reopen, saved-search editing, record revisions, draft history and archive/undo are incomplete. Prioritize safe reversal and visible audit history for destructive or mistaken edits. | Engineering; prioritize with release scope. |
-| R12 | Release operations | Update, support and privacy process | Implement manual Codex-assisted source rebuilds for approved versions. Define support/crash-report handling with opt-in and redaction; retention/deletion/export policy, supported OS/architectures, third-party notices, and a release rollback owner. No telemetry or updater was silently installed. | Manual updates confirmed; implement local recovery and redacted support process. |
-| R13 | Repository created | GitHub repository | Erin created private erinhadra22/sprout-recruit. MCP readback verified ownership, private visibility and write access. Publish the source-only tracked tree and verify every blob against the local snapshot. | Erin owns repository and will manage Launch99 access. |
+| Area | Implementation | Verification and remaining limit |
+|---|---|---|
+| Local recovery | Consistent SQLite snapshots, managed attachments/dependency handling, checksums and version manifest; daily-use and pre-change recovery points; Settings create/list/restore controls. Restore validates before replacement, keeps the prior workspace and uses an interrupted-restore journal. | Disposable WAL, corruption, dependency and restart fixtures passed. Native UI create/restore/restart recovered an earlier operator profile in a disposable workspace. No automatic retention deletion is enabled. Local snapshots cannot protect against loss of the Mac. |
+| Versioned upgrades | Tested schema 0 to 1 adoption with pre-upgrade protection, unsupported/newer-schema rejection and upgrade recovery guards. This is not a general implementation of future migrations. | Native migration/schema fixtures passed. Each future migration still needs its own fixtures and supported upgrade acceptance. |
+| Recruiter onboarding | Fresh empty workspace asks for name, company and valid display timezone. New attribution uses the saved operator; existing identities/preferences and historical records are retained. | Onboarding persistence/validation fixtures and a disposable first-run UI flow passed. Fresh standard-user acceptance remains pending. |
+| Pilot feature boundaries | Experimental AI/provider/sequence interfaces are hidden or disabled and unavailable provider execution is blocked at the native bridge. Existing Apple Messages/Phone review handoffs and saved correspondence remain available. | Interface/native fixture coverage passed. Apple handoff itself does not prove a send or completed call. |
+| Source install and rollback | Supervised installer performs preflight, stages the reviewed source build, preserves the previous bundle, records an installation receipt and supports app rollback without replacing workspace data. | 20 installer fixtures passed. Actual install/update/rollback acceptance has not yet been completed in this report. |
+| Responsive imports | CSV operations use a serial background worker with visible phase/busy state; duplicate submissions, dismissal and navigation are blocked during the operation. | Busy/retry/stale-result interface fixtures passed. This does not promise cancellability after commit or validate every large-data workload. |
+| Task corrections | Ordinary tasks support edit, reschedule and reopen. Linked draft-review edits are restricted to due date and priority, preserving exact draft wording and send gates. | Native task and interface fixtures passed, including recurrence/JSON guards. General record revisions and undo remain separate work. |
+| Display timezone | Recorded instants use the saved display timezone; date-only history retains an explicit unrecorded-time label. Manual date/time pickers clearly use the device-local timezone. | Interface date-boundary fixtures passed. Existing unknown timestamps are not inferred. |
+| Historical evidence review | Settings exposes a read-only audit of creation/recording timestamps and reply-hold evidence, with counts and bounded record references. | Native and interface fixtures passed; the copied-workspace results above remain review findings, not automatic corrections. |
 
-## Q1–Q8 resolved by Erin
+## Remaining work and release gates
 
-The original questions are answered in [PILOT-DECISIONS.md](PILOT-DECISIONS.md). Do not ask them again as open choices. Local snapshot retention is a proposed recommendation; portable backup is deferred. Launch99 access remains Erin's sharing step, with exact GitHub identity not yet supplied.
+| ID | Status / priority | Completion still needed |
+|---|---|---|
+| R1 | Recovery implemented; device fault acceptance pending | Exercise restore under realistic disk-full and interrupted-power conditions, verify managed dependencies on the target installation, and document recovery behavior. Portable export remains deferred. Retention cleanup awaits an approved policy. |
+| R2 | Current-workspace migration deferred | The existing development workspace remains at its preserved location. Coordinate operational references before migrating it; preserve path-dependent Keychain state or provide explicit reconnect instructions. Do not silently move or delete the live store. Migration fixtures are not a completed live migration. |
+| R3 | Upgrade framework implemented | Complete actual install/update/rollback acceptance and retain an exact version/commit/OS receipt. Future schema changes need fresh migration and recovery tests. |
+| R4 | Paid signing deferred by pilot scope | Local ad-hoc source builds are the pilot route. Developer ID/notarization/Gatekeeper acceptance is a future gate only if prebuilt binaries are distributed. |
+| R5 | Onboarding implemented | Verify first-run setup under a separate standard macOS user, including identity attribution after restart and updates. |
+| R6 | Pilot acceptance blocker | Test fresh standard-user install on the supported Mac, then a second recruiter Mac. Cover first launch, quit/reopen, update/rollback, moved app, no network, denied permissions, sleep/wake, long paths and recovery. Do not expand supported OS/architecture claims from the build target alone. |
+| R7 | External services: phase two | Each recruiter will connect their own accounts. Native connection/disconnect flows, consent, data-sharing disclosures and real device/provider verification remain unimplemented or unaccepted. No live connection is implied by preserved settings. |
+| R8 | Responsiveness improved; scale acceptance pending | Measure import behavior at realistic pilot volumes and memory limits. Keep failure recovery and commit boundaries explicit; small fixtures do not prove a 25,000-contact workload. |
+| R9 | Accessibility acceptance pending | Run full keyboard-only and VoiceOver checks, focus restoration/inert-background review, selected-tab semantics and smaller-display acceptance. Empty-focus dialog handling is fixed; this is not a completed accessibility audit. |
+| R10 | Historical evidence requires source review | Preserve the 50 missing creation timestamps and 88 missing recording timestamps as unknown unless exact evidence supplies them. No legacy-noon/reply-hold findings appeared in the copied-workspace audit; do not perform speculative repairs. |
+| R11 | Ordinary task corrections implemented; broader undo deferred | Saved-search editing, general record revisions, draft version history and archive/undo still need design and implementation before broader use warrants them. Existing draft send/reply safeguards must remain intact. |
+| R12 | Manual source installation implemented; operations acceptance pending | Finish installation/support acceptance, define redacted opt-in diagnostics, supported versions and recovery ownership. No background updater or telemetry is authorized. Source sharing/access remains the owner's step. |
+| R13 | Source candidate publication verification | Require exact remote tree match and a passing Desktop checks run for the candidate commit before any release tag. Publication receipts are private handoff evidence; no pilot tag is approved merely by a green build. |
 
 ## Release sequence and acceptance
 
-1. Follow the confirmed internal pilot scope and current-Mac target. Keep incomplete integrations visibly unavailable.
-2. Finish backup/restore, versioned migration and operator onboarding; preserve the current live workspace and Keychain connection during migration.
-3. Run a release candidate from the source-only repository. CI must build/test cleanly on a fresh runner. Scan dependencies and the final tracked file set for secrets and private data.
-4. Package only the app bundle. Never ship app/Data, imported CSVs, correspondence, source company documents, local handoff evidence, credentials or private backups.
-5. For this pilot, build the reviewed source locally using the Codex install guide and verify installation/upgrade under a fresh standard-user account. For a later prebuilt download, configure Developer ID/notarization and test Gatekeeper acceptance separately.
-6. Pilot with a small consenting group using disposable/noncritical data first; record launch failures, data recovery outcomes, UI issues and provider behavior. Approve broader release only after the blocking items pass.
+1. Publish and verify the current source-only implementation and run CI on its exact commit.
+2. Complete actual source install/update/rollback acceptance with a recorded commit, build, OS and recovery result; keep the current live workspace location stable until migration references are coordinated.
+3. Exercise a separate standard-user workspace with disposable data before involving another recruiter. Confirm onboarding, tasks, imported timestamps, draft review and recovery after restart.
+4. Test on a second recruiter Mac before expanding rollout. Record the supported device/OS matrix explicitly.
+5. Complete realistic fault and accessibility checks, resolve or explicitly scope the remaining limitations, and approve a pilot tag only after required acceptance gates pass.
+6. Keep external services outside this release. A later prebuilt download additionally requires revisiting signing/notarization and downloaded-app acceptance.
 
-## Build and package commands
+## Build and fixture checks
 
 ```sh
 cd app
 zsh build.sh
 zsh test.sh
 node --test Tests/*.test.cjs
-zsh package-release.sh --preview
-# Production requires configured Developer ID and notarytool Keychain profile:
-SPROUT_SIGNING_IDENTITY="Developer ID Application: …" SPROUT_NOTARY_PROFILE="…" zsh package-release.sh
+python3 Tests/installer_test.py
 ```
 
-Preview archives are explicitly labeled LOCAL-PREVIEW-NOT-NOTARIZED. Signing/notarization removes an installation trust barrier; it does not resolve the product/data recovery gates above. Fresh installed workspaces use `~/Library/Application Support/Sprout Recruit`; the current development workspace remains at its preserved existing path.
+Use the [Codex installation guide](CODEX-INSTALL.md) for supervised source-install commands and prerequisites. Copying a repository alone does not install a runnable app. Keep workspace data separate from source and app-bundle replacement.
 
-## GitHub handling
+Preview packaging remains available with `zsh package-release.sh --preview`; its archive is explicitly a local, non-notarized preview. The prepared Developer ID/notary-profile release route is outside this pilot phase. Do not disable operating-system security controls to bypass an installation warning.
 
-The local repository uses a deny-by-default source allowlist. Application source, fixtures, brand assets, build scripts, CI and this sanitized report are eligible. Live databases, backups, handoff records, benchmark identities, account files, generated apps and signing material are excluded. Current source is 75 source/configuration files plus this report. The private remote now exists under erinhadra22/sprout-recruit. Source publication is verified against the exact local tracked tree; private workspace data remains outside Git.
+## GitHub and data handling
+
+The private repository uses a deny-by-default source allowlist. Application source, fixtures, brand assets, build scripts, CI and sanitized documentation are eligible. Live databases, contact/draft records, imported CSVs, private backups, handoff evidence, account secrets, generated apps and signing material stay outside Git. Packaging must never include a recruiter's workspace.
+
+The candidate must have its own exact tree/content verification and CI result. Consult the commit-specific Desktop checks result and private handoff publication receipt; a previous green run is insufficient.
 
 ## Authoritative distribution references
 
 - [Apple: preparing your app for distribution](https://developer.apple.com/documentation/xcode/preparing-your-app-for-distribution) — distribution configuration and hardened runtime.
-- [Apple: notarizing macOS software](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution) — Developer ID, notarization and acceptance.
+- [Apple: notarizing macOS software](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution) — Developer ID, notarization and acceptance for future binary distribution.
 - [GitHub: adding locally hosted code](https://docs.github.com/en/migrations/importing-source-code/using-the-command-line-to-import-source-code/adding-locally-hosted-code-to-github) — source repository publication.
 
 ## Learning Loop Update
 
-Durable findings: restricted-shell Launch Services errors were not valid evidence that the executable was missing; actual icon launch must be checked through the normal desktop. Imported records have a separate UI renderer that must share timestamp behavior. Project instructions and local audit evidence are retained; generalized skill changes are deferred because these are application-specific fixes. Canonical learning capture is recorded separately at closeout.
+Recovery, onboarding, upgrade handling, source installation and task corrections now have implementation and fixture evidence. Device installation, realistic failure tests and external integration acceptance are separate gates. Historical missing timestamps remain unknown; no repair was inferred. Application-specific source and test changes do not require a generalized skill revision. Canonical project learning and installation evidence are recorded separately at closeout.

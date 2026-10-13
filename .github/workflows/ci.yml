@@ -35,4 +35,6 @@ jobs:
       - name: Run interface fixture checks
         working-directory: app
         run: node --test Tests/*.test.cjs
+      - name: Run installer fixture checks
+        run: python3 -B app/Tests/installer_test.py
       # No workspace data, signing secrets, or build artifacts are uploaded.

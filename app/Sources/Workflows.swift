@@ -63,7 +63,7 @@ extension Store {
             let activity=try get("activities",existing)
             guard activity["agentId"] as? String == aid, activity["kind"] as? String == "interaction" else { throw StoreError(message:"The existing interaction belongs to a different contact.") }; activityId=existing
         } else {
-            try put("activities",["id":activityId,"agentId":aid,"kind":"interaction","title":"Call — "+outcome.replacingOccurrences(of:"_",with:" "),"body":notes.isEmpty ? "Outcome confirmed; no conversation content inferred." : notes,"date":occurrence?.timestamp ?? day,"createdAt":now,"recordedAt":now,"author":"Erin Hadra","pinned":false,"workflowId":wid,"confirmationSource":source])
+            try put("activities",["id":activityId,"agentId":aid,"kind":"interaction","title":"Call — "+outcome.replacingOccurrences(of:"_",with:" "),"body":notes.isEmpty ? "Outcome confirmed; no conversation content inferred." : notes,"date":occurrence?.timestamp ?? day,"createdAt":now,"recordedAt":now,"author":try operatorName(),"pinned":false,"workflowId":wid,"confirmationSource":source])
         }
         let before=agent["status"] as? String ?? ""
         // Advance only early stages. Closed, advanced and suppression states are never regressed.

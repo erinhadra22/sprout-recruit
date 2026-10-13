@@ -1,6 +1,31 @@
 'use strict';
 const CSVImportUI = (()=>{
- let inspection=null,preview=null,mappings=null;
+ let inspection=null,preview=null,mappings=null,busy=false;
+ // The native worker reports phases, not invented completion percentages.
+ async function working(label,operation){
+  if(busy)throw Error('A CSV operation is already running. Please wait for it to finish.');
+  busy=true;
+  const host=document.querySelector('.modal');
+  const controls=[...document.querySelectorAll('.modal button,.modal input,.modal select,.modal textarea,[data-action="csv-import-pick"]')];
+  const disabled=controls.map(control=>control.disabled);
+  const priorBusy=host?.getAttribute('aria-busy');
+  host?.setAttribute('aria-busy','true');
+  controls.forEach(control=>{control.disabled=true;});
+  const status=document.createElement('p');
+  status.className='hint';status.setAttribute('role','status');status.setAttribute('aria-live','polite');status.setAttribute('tabindex','-1');
+  status.textContent=label+' Please keep Sprout open until this finishes.';
+  if(!host)status.setAttribute('style','position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:1000;background:white;border:1px solid #b9c8ba;border-radius:10px;padding:14px 20px;box-shadow:0 5px 24px #0002;max-width:80vw;');
+  (host?.querySelector('.modal-body')||document.getElementById('content')||document.body).appendChild(status);
+  try {
+   // Yield so the status is painted before the asynchronous native request.
+   await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+   return await operation();
+  } finally {
+   busy=false;status.remove();
+   if(priorBusy==null)host?.removeAttribute('aria-busy');else host?.setAttribute('aria-busy',priorBusy);
+   controls.forEach((control,index)=>{if(control.isConnected)control.disabled=disabled[index];});
+  }
+ }
  const privateFields=new Set(["Agent's Home Address","Most Recent Mutual Connection Address","Note 1","Note 2","Note 3"]);
  const privateCore=new Set(['recentMutualAddress','note1','note2','note3']);
  const numericCore=new Set(['years','officeYears','volume','change','units','buySideVolume','listSideVolume','buySideUnits','listSideUnits','active','pending','rentals','avgRentalPrice','avgSalesPrice','approxGCI','closedTransactions','closeRatio','dom','ytdVolume','ytdUnits','ytdAvgSalesPrice','mutualConnections','recentMutualClosePrice']);
@@ -26,7 +51,7 @@ const CSVImportUI = (()=>{
  }
  function renderProfile(agent){
   const i=S.reviewIds.indexOf(agent.id),lists=D.watchlists.filter(w=>w.agentIds.includes(agent.id));
-  return `<div class="profile-nav"><div class="row"><button class="text-button" data-action="profile-close">← Back to ${E(S.returnPage==='contacts'?'CRM contacts':S.returnPage)}</button><span style="color:#d4dcd5">|</span><strong>${E(agent.name)}</strong></div><span class="sub">Imported contact</span><div class="row">${ib('Previous agent','profile-prev','left',i<=0?'disabled':'')}<span class="sub">${Math.max(1,i+1)} of ${Math.max(1,S.reviewIds.length)}</span>${ib('Next agent','profile-next','right',i<0||i>=S.reviewIds.length-1?'disabled':'')}${ib('Close profile','profile-close','close')}</div></div><div class="profile-layout"><aside class="card profile-sidebar"><div class="sidebar-block"><div class="row" style="justify-content:flex-end">${ib('Like agent','like','like',`data-id="${agent.id}"`,agent.liked?'active':'')}${ib('Add to watchlist','add-watchlist','folder',`data-id="${agent.id}"`)}${ib('Edit contact','edit-contact','note',`data-id="${agent.id}"`)}</div><div class="profile-title">${avatar(agent,'large')}<div style="min-width:0"><h2>${E(agent.name)}</h2><p class="agent-office">${E(agent.office||'Office not supplied')}</p><p class="hint">${E(agent.source||'CSV import')}</p></div></div><div class="profile-actions">${[['Interaction','interaction','message'],['Task','task-create','task'],['Note','note','note'],['Draft text','draft','spark']].map(([label,action,ic])=>`<button class="profile-action" data-action="${action}" data-id="${agent.id}"><span class="action-tile">${icon(ic,19)}</span>${label}</button>`).join('')}</div></div><div class="sidebar-block"><h3>Prospect management</h3><div class="details"><div class="detail-pair"><label>CRM status</label><select aria-label="Prospect status" data-agent-field="status" data-id="${agent.id}">${selectOptions(D.stages,agent.status,'No status')}</select></div><div class="detail-pair"><label>Source status</label><span>${E(agent.sourceStatus||'Not supplied')}</span></div><div class="detail-pair"><label>Potential to move</label><select aria-label="Potential to move" data-agent-field="move" data-id="${agent.id}">${selectOptions(['High','Moderate','Low','Unknown'],agent.move,'No assessment')}</select></div></div></div><div class="sidebar-block"><h3>Contact info</h3><div class="details">${[['Phone',agent.phone],['Email',agent.email],['City',agent.city]].map(([label,value])=>`<div class="detail-pair"><label>${label}</label><span style="overflow-wrap:anywhere">${E(value||'Not supplied')}</span></div>`).join('')}<div class="detail-pair"><label>Added to Sprout</label><span>${E(dateTime(agent.createdAt||agent.importedAt))}</span></div><div class="detail-pair"><label>Last imported</label><span>${E(dateTime(agent.importedAt))}</span></div>${linkedinContactInfo(agent)}</div>${emailCompanyReviewInfo(agent)}<p class="hint">Imported contact details should be reviewed before outreach. No message or call was sent by this import.</p>${CommunicationsUI.profileActions(agent)}</div><div class="sidebar-block"><h3>Agent identity</h3><div class="details">${[['MLS affiliation',agent.mls],['MLS ID',agent.mlsId],['License number',agent.license],['Brand',agent.brand]].map(([label,value])=>`<div class="detail-pair"><label>${label}</label><span>${E(value||'—')}</span></div>`).join('')}</div></div><div class="sidebar-block"><h3>Watchlists</h3><div class="row" style="flex-wrap:wrap;margin-top:13px">${lists.map(w=>`<span class="chip">${E(w.name)}</span>`).join('')||'<span class="sub">Not on a watchlist yet</span>'}</div></div></aside><section class="profile-main">${pageTabs(['Source data','Five-year performance','Activity log'],S.profileTab,'profile-tab')}${S.profileTab==='Activity log'?renderTimeline(agent.id):S.profileTab==='Five-year performance'?PerformanceUI.renderProfile(agent,D):profile(agent)}</section></div>`;
+  return `<div class="profile-nav"><div class="row"><button class="text-button" data-action="profile-close">← Back to ${E(S.returnPage==='contacts'?'CRM contacts':S.returnPage)}</button><span style="color:#d4dcd5">|</span><strong>${E(agent.name)}</strong></div><span class="sub">Imported contact</span><div class="row">${ib('Previous agent','profile-prev','left',i<=0?'disabled':'')}<span class="sub">${Math.max(1,i+1)} of ${Math.max(1,S.reviewIds.length)}</span>${ib('Next agent','profile-next','right',i<0||i>=S.reviewIds.length-1?'disabled':'')}${ib('Close profile','profile-close','close')}</div></div><div class="profile-layout"><aside class="card profile-sidebar"><div class="sidebar-block"><div class="row" style="justify-content:flex-end">${ib('Like agent','like','like',`data-id="${agent.id}"`,agent.liked?'active':'')}${ib('Add to watchlist','add-watchlist','folder',`data-id="${agent.id}"`)}${ib('Edit contact','edit-contact','note',`data-id="${agent.id}"`)}</div><div class="profile-title">${avatar(agent,'large')}<div style="min-width:0"><h2>${E(agent.name)}</h2><p class="agent-office">${E(agent.office||'Office not supplied')}</p><p class="hint">${E(agent.source||'CSV import')}</p></div></div><div class="profile-actions">${[['Interaction','interaction','message'],['Task','task-create','task'],['Note','note','note'],['Draft text','draft','spark']].map(([label,action,ic])=>`<button class="profile-action" data-action="${action}" data-id="${agent.id}"><span class="action-tile">${icon(ic,19)}</span>${label}</button>`).join('')}</div></div><div class="sidebar-block"><h3>Prospect management</h3><div class="details"><div class="detail-pair"><label>CRM status</label><select aria-label="Prospect status" data-agent-field="status" data-id="${agent.id}">${selectOptions(D.stages,agent.status,'No status')}</select></div><div class="detail-pair"><label>Source status</label><span>${E(agent.sourceStatus||'Not supplied')}</span></div><div class="detail-pair"><label>Potential to move</label><select aria-label="Potential to move" data-agent-field="move" data-id="${agent.id}">${selectOptions(['High','Moderate','Low','Unknown'],agent.move,'No assessment')}</select></div></div></div><div class="sidebar-block"><h3>Contact info</h3><div class="details">${[['Phone',agent.phone],['Email',agent.email],['City',agent.city]].map(([label,value])=>`<div class="detail-pair"><label>${label}</label><span style="overflow-wrap:anywhere">${E(value||'Not supplied')}</span></div>`).join('')}<div class="detail-pair"><label>Added to Sprout</label><span>${E(dateTime(agent.createdAt||agent.importedAt))}</span></div><div class="detail-pair"><label>Last imported</label><span>${E(dateTime(agent.lastImportedAt||agent.importedAt))}</span></div>${linkedinContactInfo(agent)}</div>${emailCompanyReviewInfo(agent)}<p class="hint">Imported contact details should be reviewed before outreach. No message or call was sent by this import.</p>${CommunicationsUI.profileActions(agent)}</div><div class="sidebar-block"><h3>Agent identity</h3><div class="details">${[['MLS affiliation',agent.mls],['MLS ID',agent.mlsId],['License number',agent.license],['Brand',agent.brand]].map(([label,value])=>`<div class="detail-pair"><label>${label}</label><span>${E(value||'—')}</span></div>`).join('')}</div></div><div class="sidebar-block"><h3>Watchlists</h3><div class="row" style="flex-wrap:wrap;margin-top:13px">${lists.map(w=>`<span class="chip">${E(w.name)}</span>`).join('')||'<span class="sub">Not on a watchlist yet</span>'}</div></div></aside><section class="profile-main">${pageTabs(['Source data','Five-year performance','Activity log'],S.profileTab,'profile-tab')}${S.profileTab==='Activity log'?renderTimeline(agent.id):S.profileTab==='Five-year performance'?PerformanceUI.renderProfile(agent,D):profile(agent)}</section></div>`;
  }
  function decorate(){
   const tag=document.querySelector('.sample-tag');
@@ -66,11 +91,12 @@ const CSVImportUI = (()=>{
   row?.querySelector('.csv-new-field')?.toggleAttribute('hidden',event.target.value!=='custom:new');
  });
  async function pick(){
-  const result=await native('csv.import.pick');
+  const result=await working('Reading selected CSV files.',()=>native('csv.import.pick'));
   if(result.cancelled)return;
   inspection=result;preview=null;mappings=null;mapForm();
  }
  async function review(){
+  if(busy)throw Error('A CSV operation is already running. Please wait for it to finish.');
   if(!inspection)throw Error('Choose CSV files first.');
   const existing=inspection.customFields||[];
   mappings=[...document.querySelectorAll('[data-map-row]')].map(row=>{
@@ -79,7 +105,7 @@ const CSVImportUI = (()=>{
    return {header:row.dataset.header,target,label:target==='custom:new'?row.querySelector('[data-map-label]').value.trim():row.dataset.header,type};
   });
   if(mappings.length!==inspection.columns.length||mappings.some(m=>m.target==='custom:new'&&!m.label))throw Error('Give every new custom field a name.');
-  preview=await native('csv.import.preview',{mappings});
+  preview=await working('Checking mappings and contact matches.',()=>native('csv.import.preview',{mappings}));
   const files=preview.fileNames.map(name=>`<li>${E(name)}</li>`).join('');
   const newFields=Array.isArray(preview.customFieldsToCreate)?preview.customFieldsToCreate.length:preview.customFieldsToCreate;
   const conflicts=(preview.conflictDetails||[]).map(x=>`<li>${E(x)}</li>`).join('');
@@ -88,14 +114,20 @@ const CSVImportUI = (()=>{
   const canImport=!preview.hardConflicts&&!preview.alreadyImported&&(preview.newAgents||preview.updateAgents);
   modal('Review import counts',body,'',`${btn('Edit mapping','csv-import-edit')}${canImport?'<button type="button" class="button primary" data-action="csv-import-commit">Import contacts</button>':''}`,'',false,true);
  }
- function edit(){mapForm();}
+ function edit(){if(busy)throw Error('Wait for the CSV operation to finish before editing mappings.');mapForm();}
  async function commit(){
   if(!preview||preview.hardConflicts||preview.alreadyImported)throw Error('Review the CSV mapping and counts again before importing.');
-  const result=await native('csv.import.commit',{token:preview.token});
-  inspection=null;preview=null;mappings=null;
-  D=await native('snapshot');
+  const result=await working('Backing up and importing contacts.',async()=>{
+   const saved=await native('csv.import.commit',{token:preview.token});
+   // The native commit receipt is authoritative even if refreshing the view fails.
+   inspection=null;preview=null;mappings=null;
+   try {D=await native('snapshot');} catch(error){
+    throw Error('Import saved successfully, but the view could not refresh. Reopen the workspace to see your saved contacts. '+error.message);
+   }
+   return saved;
+  });
   closeModal();render();
   toast(`${result.newAgents} new and ${result.updateAgents} updated contacts saved on this Mac.`);
  }
- return {profile,renderProfile,decorate,dashboard,pick,review,edit,commit,tableFields};
+ return {profile,renderProfile,decorate,dashboard,pick,review,edit,commit,tableFields,isBusy:()=>busy};
 })();

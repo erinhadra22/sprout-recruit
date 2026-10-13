@@ -2,6 +2,12 @@ import Foundation
 
 func runTests() throws {
     try runWorkspaceLocationTests()
+    try runOnboardingTests()
+    try runHistoricalAuditTests()
+    try runRecoveryTests()
+    try runTaskEditTests()
+    try runSchemaUpgradeTests()
+    try runMigrationTests()
     try runCourtedImportTests()
     try runGenericImportTests()
     try runAIContextTests()

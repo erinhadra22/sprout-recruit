@@ -73,6 +73,11 @@ final class Store {
     }
     init(path: String, seed: Bool = true, seedSamples: Bool = false) throws {
         self.path = path
+        let existed = FileManager.default.fileExists(atPath:path)
+        if existed {
+            let info = try WorkspaceRecovery.compatibility(path)
+            if info["schemaVersion"] as? Int == 0 { _ = try WorkspaceRecovery.snapshot(path,reason:"before-schema-1") }
+        }
         try FileManager.default.createDirectory(at: URL(fileURLWithPath: path).deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions:0o700])
         guard sqlite3_open(path, &db) == SQLITE_OK else { throw StoreError(message: "Cannot open the local database.") }
         try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:path)
@@ -81,6 +86,9 @@ final class Store {
         try sql("PRAGMA synchronous=FULL")
         try sql("CREATE TABLE IF NOT EXISTS records (kind TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(kind,id))")
         try sql("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        // Schema 1 formalizes the existing records/meta layout; future versions require ordered migrations.
+        try transaction { try self.sql("PRAGMA user_version=1") }
+
         if seed {
             try transaction {
                 if try self.meta("seed_version") == nil {
@@ -171,7 +179,7 @@ final class Store {
             "draftBody":body,"draftUpdatedAt":draft["updatedAt"] as? String ?? Store.now(),
             "title":title,"description":description,"dueDate":Store.day(due),
             "type":channel == "Message" ? "Message" : channel == "Phone call" ? "Call" : "Email",
-            "priority":"Medium","assignee":"Erin Hadra","repeatDays":0,
+            "priority":"Medium","assignee":try operatorName(),"repeatDays":0,
             "completed":false,"createdAt":Store.now()
         ]
         try put("tasks",task)
@@ -217,43 +225,8 @@ final class Store {
         catch { try? sql("ROLLBACK"); throw error }
     }
     func consistentBackup(label: String) throws -> String {
-        let directory = URL(fileURLWithPath:path).deletingLastPathComponent().appendingPathComponent("Backups")
-        try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true,
-            attributes:[.posixPermissions:0o700])
-        let destination = directory.appendingPathComponent("\(label)-\(Store.day())-\(UUID().uuidString).sqlite")
-        var backupDB: OpaquePointer?
-        guard sqlite3_open_v2(destination.path,&backupDB,SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,nil) == SQLITE_OK else {
-            if backupDB != nil { sqlite3_close(backupDB) }
-            throw StoreError(message:"Could not create the pre-import database backup.")
-        }
-        defer { if backupDB != nil { sqlite3_close(backupDB) } }
-        guard let handle = sqlite3_backup_init(backupDB,"main",db,"main") else {
-            throw StoreError(message:"Could not start the consistent database backup.")
-        }
-        let step = sqlite3_backup_step(handle,-1)
-        let finish = sqlite3_backup_finish(handle)
-        guard step == SQLITE_DONE, finish == SQLITE_OK else {
-            try? FileManager.default.removeItem(at:destination)
-            throw StoreError(message:"The pre-import database backup did not finish.")
-        }
-        let closeStatus = sqlite3_close(backupDB)
-        backupDB = nil
-        guard closeStatus == SQLITE_OK else { throw StoreError(message:"Could not finish the pre-import backup file.") }
-        try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:destination.path)
-        var check: OpaquePointer?
-        guard sqlite3_open_v2(destination.path,&check,SQLITE_OPEN_READWRITE,nil) == SQLITE_OK else {
-            if check != nil { sqlite3_close(check) }
-            throw StoreError(message:"Could not reopen the pre-import backup.")
-        }
-        defer { sqlite3_close(check) }
-        var statement: OpaquePointer?; defer { sqlite3_finalize(statement) }
-        let prepared = sqlite3_prepare_v2(check,"PRAGMA integrity_check",-1,&statement,nil)
-        let stepped = prepared == SQLITE_OK ? sqlite3_step(statement) : prepared
-        let verdict = stepped == SQLITE_ROW ? String(cString:sqlite3_column_text(statement,0)) : "unavailable"
-        guard prepared == SQLITE_OK, stepped == SQLITE_ROW, verdict == "ok" else {
-            throw StoreError(message:"The pre-import backup failed its integrity check (\(prepared), \(stepped), \(verdict)).")
-        }
-        return destination.path
+        let result = try WorkspaceRecovery.snapshot(path,reason:label)
+        return result["snapshotPath"] as! String
     }
     private func required(_ p: Record, _ key: String, max: Int = 10000) throws -> String {
         guard let v = p[key] as? String, !v.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, v.count <= max else { throw StoreError(message: "Please enter a valid \(key) (up to \(max) characters).") }; return v.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -263,7 +236,7 @@ final class Store {
     }
     private func activity(_ agent: String, kind: String, title: String, body: String = "", date: String? = nil) throws {
         let now = Store.now()
-        try put("activities", ["id":UUID().uuidString,"agentId":agent,"kind":kind,"title":title,"body":body,"date":date ?? now,"createdAt":now,"author":"Erin Hadra","pinned":false])
+        try put("activities", ["id":UUID().uuidString,"agentId":agent,"kind":kind,"title":title,"body":body,"date":date ?? now,"createdAt":now,"author":try operatorName(),"pinned":false])
     }
     private func saveTask(_ p: Record) throws -> Record {
         let title = try required(p,"title",max:200), due = try required(p,"dueDate",max:10)
@@ -273,7 +246,7 @@ final class Store {
         guard [0,1,7,14,30].contains(interval) else { throw StoreError(message: "Choose a supported recurrence.") }
         let type = p["type"] as? String ?? "Check-in", priority = p["priority"] as? String ?? "None"
         guard ["Check-in","Call","Email","Message","Meeting","To-do"].contains(type), ["None","Low","Medium","High"].contains(priority) else { throw StoreError(message: "Invalid task type or priority.") }
-        let task: Record = ["id":UUID().uuidString,"agentId":aid,"title":title,"dueDate":due,"type":type,"priority":priority,"description":p["description"] as? String ?? "","assignee":p["assignee"] as? String ?? "Erin Hadra","repeatDays":interval,"completed":false,"createdAt":Store.now()]
+        let task: Record = ["id":UUID().uuidString,"agentId":aid,"title":title,"dueDate":due,"type":type,"priority":priority,"description":p["description"] as? String ?? "","assignee":try (p["assignee"] as? String ?? operatorName()),"repeatDays":interval,"completed":false,"createdAt":Store.now()]
         try put("tasks",task); try activity(aid,kind:"task",title:"Task created: \(title)",body:"Due \(due)")
         return task
     }
@@ -299,6 +272,9 @@ final class Store {
         return Int(sqlite3_column_int64(statement, 0))
     }
     func command(_ action: String, _ p: Record = [:]) throws -> Record {
+        if action == "history.audit" { return try historicalAudit(p) }
+        if action == "recovery.list" { return try WorkspaceRecovery.list(path) }
+        if action == "recovery.create" { return try WorkspaceRecovery.snapshot(path,reason:"manual") }
         if action == "snapshot" { return try snapshot() }
         if action == "workspace.version" { return ["dataVersion": try dataVersion()] }
         if action == "performance.report" { return try managerReport(p) }
@@ -308,12 +284,13 @@ final class Store {
         if action == "csv.import.reconcile-move" { return try reconcileImportedMove() }
         return try transaction {
             switch action {
+            case "onboarding.save": try self.saveOnboarding(p)
             case "sample.purge":
                 try self.purgeSampleContacts()
             case "agent.create":
                 let name = try required(p,"name",max:120)
                 let linkedIn = try Store.linkedInProfileURL(p["linkedinUrl"] as? String ?? "")
-                let r: Record = ["id":UUID().uuidString,"name":name,"office":p["office"] as? String ?? "Independent","city":p["city"] as? String ?? "","email":p["email"] as? String ?? "","phone":p["phone"] as? String ?? "","linkedinUrl":linkedIn,"source":"Manual contact","datasetId":"live","manual":true,"status":"Identified","assignee":"Erin Hadra","liked":false,"disposition":"","createdAt":Store.now(),"history":[],"transactions":[],"signals":[],"move":"Unknown"]
+                let r: Record = ["id":UUID().uuidString,"name":name,"office":p["office"] as? String ?? "Independent","city":p["city"] as? String ?? "","email":p["email"] as? String ?? "","phone":p["phone"] as? String ?? "","linkedinUrl":linkedIn,"source":"Manual contact","datasetId":"live","manual":true,"status":"Identified","assignee":try operatorName(),"liked":false,"disposition":"","createdAt":Store.now(),"history":[],"transactions":[],"signals":[],"move":"Unknown"]
                 try self.put("agents",r); try self.activity(r["id"] as! String,kind:"system",title:"Contact added locally")
             case "agent.verifyCommunication":
                 let requestedKeys = Set(p.keys)
@@ -364,7 +341,7 @@ final class Store {
                     "title":"Contact and phone reviewed for communication",
                     "body":evidence == nil ? "Reviewed the saved contact name, source, and phone. No message or call was made."
                         : "Codex matched the imported name, phone, Courted profile ID, and license to the first-contact source record. No message or call was made.",
-                    "date":now,"createdAt":now,"author":evidence == nil ? "Erin Hadra" : "Codex","pinned":false])
+                    "date":now,"createdAt":now,"author":evidence == nil ? (try operatorName()) : "Codex","pinned":false])
             case "agent.update":
                 let aid = try self.agentID(p); var r = try self.get("agents",aid)
                 var overrides = Set(r["localOverrides"] as? [String] ?? [])
@@ -401,7 +378,7 @@ final class Store {
                 guard allowed.contains(reason) else { throw StoreError(message:"Choose a feedback reason.") }
                 let detail = (p["detail"] as? String ?? "").trimmingCharacters(in:.whitespacesAndNewlines)
                 guard detail.count <= 1000, reason != "Other" || !detail.isEmpty else { throw StoreError(message:"Add a short explanation for Other.") }
-                let feedback: Record = ["id":UUID().uuidString,"agentId":aid,"reason":reason,"detail":detail,"createdAt":Store.now(),"source":"Erin review"]
+                let feedback: Record = ["id":UUID().uuidString,"agentId":aid,"reason":reason,"detail":detail,"createdAt":Store.now(),"source":try operatorName()+" review"]
                 try self.put("candidateFeedback",feedback)
                 agent["disposition"] = "skipped"
                 agent["rejectionReason"] = reason
@@ -440,6 +417,31 @@ final class Store {
             case "activity.pin":
                 var r = try self.get("activities",self.required(p,"id")); r["pinned"] = p["pinned"] as? Bool ?? false; try self.put("activities",r)
             case "task.create": _ = try self.saveTask(p)
+            case "task.update":
+                var t = try self.get("tasks",self.required(p,"id"))
+                guard t["completed"] as? Bool != true else { throw StoreError(message:"Reopen the task before editing it.") }
+                let keys = Set(p.keys).subtracting(["id"])
+                let allowed: Set<String> = t["draftId"] == nil ? ["title","dueDate","type","priority","description","repeatDays"] : ["dueDate","priority"]
+                guard keys.isSubset(of:allowed) else { throw StoreError(message:"Linked draft wording must be edited in its draft.") }
+                for key in ["title","dueDate","type","priority","description"] where p[key] != nil {
+                    guard p[key] is String else { throw StoreError(message:"Task fields must contain text.") }
+                }
+                if let due=p["dueDate"] as? String { guard Store.parseDay(due) != nil else { throw StoreError(message:"Choose a valid due date.") } }
+                if let type=p["type"] as? String { guard ["Check-in","Call","Email","Message","Meeting","To-do"].contains(type) else { throw StoreError(message:"Invalid task type.") } }
+                if let priority=p["priority"] as? String { guard ["None","Low","Medium","High"].contains(priority) else { throw StoreError(message:"Invalid priority.") } }
+                if p["title"] != nil { _ = try self.required(p,"title",max:200) }
+                if let description=p["description"] as? String { guard description.count<=20000 else { throw StoreError(message:"Task description is too long.") } }
+                if let value=p["repeatDays"] {
+                    guard let n=value as? Int, CFGetTypeID(value as CFTypeRef) != CFBooleanGetTypeID(), [0,1,7,14,30].contains(n) else { throw StoreError(message:"Choose a supported repeat interval.") }
+                }
+                for (k,v) in p where k != "id" { t[k]=v }
+                t["updatedAt"]=Store.now(); try self.put("tasks",t)
+            case "task.reopen":
+                var t = try self.get("tasks",self.required(p,"id"))
+                if t["completed"] as? Bool == true {
+                    t["completed"]=false; t.removeValue(forKey:"completedAt");t["reopenedAt"]=Store.now();try self.put("tasks",t)
+                    try self.activity(t["agentId"] as! String,kind:"task",title:"Task reopened: \(t["title"] as? String ?? "Follow-up")")
+                }
             case "task.complete":
                 var t = try self.get("tasks",self.required(p,"id"))
                 if t["completed"] as? Bool != true {
@@ -447,10 +449,10 @@ final class Store {
                     let aid = t["agentId"] as! String
                     try self.activity(aid,kind:"task",title:"Task completed: \(t["title"] as? String ?? "Follow-up")")
                     let interval = t["repeatDays"] as? Int ?? 0
-                    if interval > 0 {
+                    if try interval > 0 && !self.all("tasks").contains(where: { $0["recurrenceSourceId"] as? String == t["id"] as? String }) {
                         let oldDue = Store.parseDay(t["dueDate"] as? String ?? "") ?? Date()
                         t["dueDate"] = Store.plusDays(interval,from:max(oldDue,Date()))
-                        _ = try self.saveTask(t)
+                        var next = try self.saveTask(t); next["recurrenceSourceId"] = t["id"]; try self.put("tasks",next)
                     }
                 }
             case "watchlist.save":
@@ -484,7 +486,8 @@ final class Store {
             case "preferences.save", "settings.save":
                 let key = action == "preferences.save" ? "preferences" : "workspace"
                 var r = try self.get("settings",key)
-                for (k,v) in p where k != "id" { r[k] = v }
+                if key == "workspace" { r = try self.validatedWorkspaceSettings(p,existing:r) }
+                else { for (k,v) in p where k != "id" { r[k] = v } }
                 if key == "preferences" {
                     guard let limit = r["dailyLimit"] as? Int, [10,15,20].contains(limit) else { throw StoreError(message:"Choose 10, 15 or 20 daily sample agents.") }
                     for pair in [("minVolume","maxVolume"),("minYears","maxYears"),("minUnits","maxUnits"),("minPrice","maxPrice")] {
@@ -515,7 +518,7 @@ final class Store {
                 let activityNow = Store.now()
                 try self.put("activities",["id":UUID().uuidString,"agentId":aid,"kind":"draft",
                     "title":"\(channel) draft saved — not sent","body":body,"draftId":id,
-                    "date":activityNow,"createdAt":activityNow,"author":"Erin Hadra","pinned":false])
+                    "date":activityNow,"createdAt":activityNow,"author":try operatorName(),"pinned":false])
             case "draft.tasks.ensure":
                 for draft in try self.all("drafts") where draft["state"] as? String == "draft" {
                     guard let aid = draft["agentId"] as? String,

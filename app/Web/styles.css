@@ -38,3 +38,6 @@
 .timeline-open:hover{color:#184e3e}
 
 .modal-body{min-height:0;flex:1 1 auto}
+
+/* First-run identity and recovery are local pilot features. */
+.onboarding{max-width:660px;margin:24px auto}.onboarding h1{margin:12px 0}.onboarding form{margin-top:24px}.recovery-list{padding-left:20px}.recovery-list li{margin:16px 0}.recovery-list .path{display:block;overflow-wrap:anywhere;margin-top:6px}

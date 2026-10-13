@@ -12,6 +12,9 @@
 !/app/
 !/app/build.sh
 !/app/test.sh
+!/app/install-local.sh
+!/app/installer.py
+!/app/Tests/installer_test.py
 !/app/package-release.sh
 !/app/Sources/
 !/app/Sources/*.swift

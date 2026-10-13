@@ -266,9 +266,9 @@ extension Store {
                 hard.append("\(file.name) row \(index + 2): generated ID already exists"); continue
             }
             let raw: Record = row
-            var agent = matches.first ?? ["id":id,"name":name,"office":"","city":"","email":"","phone":"",
+            var agent = try matches.first ?? ["id":id,"name":name,"office":"","city":"","email":"","phone":"",
                 "source":"CSV import","datasetId":"live","manual":false,"status":"Identified",
-                "assignee":"Erin Hadra","liked":false,"disposition":"","createdAt":importedAt,
+                "assignee":try operatorName(),"liked":false,"disposition":"","createdAt":importedAt,
                 "history":[],"transactions":[],"signals":[]]
             if matches.isEmpty, let sourceStatus = core["sourceStatus"] as? String,
                stages.contains(sourceStatus) { agent["status"] = sourceStatus }

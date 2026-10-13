@@ -37,3 +37,9 @@ Keep recovery data outside the Git checkout and app bundle, with private filesys
 6. Publish a reviewed pilot tag only after these gates pass; record exact commit, build, OS and recovery result in each installation receipt.
 
 The source audit fixes already completed remain recorded in [PRODUCTION-READINESS-AUDIT.md](PRODUCTION-READINESS-AUDIT.md). No customer-ready release is claimed.
+
+## October 13 implementation follow-through
+
+The 0.5.0 candidate implements first-run recruiter/company/timezone setup, local verified recovery with managed attachments, schema-0 adoption and future-schema refusal, offline migration tooling, manual source installation and code rollback guards. It also adds task edit/reschedule/reopen, CSV busy handling, and a read-only historical-evidence audit. Unfinished integration controls are hidden or rejected in the pilot interface. Test and device acceptance results are recorded in PRODUCTION-READINESS-AUDIT.md.
+
+Implemented retention is preserve-all: automatic pruning and portable exports are not enabled. The proposed seven-daily/three-upgrade policy above remains unapproved. Erin will manage Launch99 access tomorrow; no invitation or scheduled reminder was created.

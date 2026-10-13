@@ -121,7 +121,7 @@ func runGenericImportTests() throws {
               "header variants in separate files may map to one core field")
 
     let enrichmentCSV = root.appendingPathComponent("contact-enrichment.csv")
-    let enrichmentSource = "Name,Courted Profile URL,Current Office,Email,Potential to Move,LinkedIn URL\nLibby Test,https://brokerage.courted.io/agents/libby,Serhant Texas,old@evrealestate.com,High,linkedin.com/in/libby-test\n"
+    let enrichmentSource = "Name,Courted Profile URL,Current Office,Email,Potential to Move,LinkedIn URL\nJordan Fixture,https://brokerage.courted.io/agents/fixture-enrichment,Cedar House Realty,old@different.example,High,linkedin.com/in/fixture-enrichment\n"
     try Data(enrichmentSource.utf8).write(to:enrichmentCSV)
     let enrichmentStore = try Store(path:root.appendingPathComponent("enrichment.sqlite").path,seed:false)
     let enrichmentInspection = try enrichmentStore.inspectGenericImport(["paths":[enrichmentCSV.path]])
@@ -142,23 +142,23 @@ func runGenericImportTests() throws {
     _ = try enrichmentStore.commitGenericImport(enrichmentCommit)
     let enrichedID = try enrichmentStore.all("agents")[0]["id"] as! String
     _ = try enrichmentStore.command("agent.update",["agentId":enrichedID,"move":"Low",
-                                                   "email":"libby@serhant.com","linkedinUrl":"https://www.linkedin.com/in/libby-test/"])
+                                                   "email":"fixture@cedarhouse.example","linkedinUrl":"https://www.linkedin.com/in/fixture-enrichment/"])
     let researched = try enrichmentStore.get("agents",enrichedID)
     try check(researched["move"] as? String == "Low","research can correct imported move potential")
     try check((researched["localOverrides"] as? [String] ?? []).contains("move"),"move correction is protected from reimport")
-    try check(researched["linkedinUrl"] as? String == "https://www.linkedin.com/in/libby-test/","LinkedIn profile is normalized and saved")
+    try check(researched["linkedinUrl"] as? String == "https://www.linkedin.com/in/fixture-enrichment/","LinkedIn profile is normalized and saved")
     let review = Store.emailCompanyReview(researched)
     try check(review["state"] as? String == "appears_consistent","updated business domain appears consistent")
-    var personal = researched; personal["email"] = "libby@gmail.com"
+    var personal = researched; personal["email"] = "@gmail.com"
     try check(Store.emailCompanyReview(personal)["state"] as? String == "unverified",
               "personal domain is flagged for review without being called invalid")
-    let changedEnrichment = enrichmentSource.replacingOccurrences(of:"old@evrealestate.com,High",with:"other@evrealestate.com,High")
+    let changedEnrichment = enrichmentSource.replacingOccurrences(of:"old@different.example,High",with:"other@different.example,High")
     try Data(changedEnrichment.utf8).write(to:enrichmentCSV)
     let reimportPreview = try enrichmentStore.previewGenericImport(enrichmentInput)
     var reimport = enrichmentInput; reimport["token"] = reimportPreview["token"]
     _ = try enrichmentStore.commitGenericImport(reimport)
     let afterImport = try enrichmentStore.get("agents",enrichedID)
-    try check(afterImport["move"] as? String == "Low" && afterImport["email"] as? String == "libby@serhant.com",
+    try check(afterImport["move"] as? String == "Low" && afterImport["email"] as? String == "fixture@cedarhouse.example",
               "research corrections survive a later source refresh")
     do {
         _ = try enrichmentStore.command("agent.update",["agentId":enrichedID,"linkedinUrl":"https://example.com/in/wrong"])
@@ -166,6 +166,6 @@ func runGenericImportTests() throws {
     } catch let error as StoreError {
         try check(error.message != "Non-LinkedIn profile unexpectedly passed.","non-LinkedIn URL is rejected")
     }
-    try check(try enrichmentStore.get("agents",enrichedID)["linkedinUrl"] as? String == "https://www.linkedin.com/in/libby-test/",
+    try check(try enrichmentStore.get("agents",enrichedID)["linkedinUrl"] as? String == "https://www.linkedin.com/in/fixture-enrichment/",
               "invalid LinkedIn update does not change the saved record")
 }

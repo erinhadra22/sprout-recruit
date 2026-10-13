@@ -13,12 +13,13 @@ cd app
 SPROUT_SDK="$(xcrun --sdk macosx --show-sdk-path)" SPROUT_ARCH="$(uname -m)" zsh build.sh
 zsh test.sh
 node --test Tests/*.test.cjs
+python3 -B Tests/installer_test.py
 open 'Sprout Recruit.app'
 ```
 
 `SPROUT_SDK` selects an installed SDK compatible with the local Swift compiler. `SPROUT_ARCH` selects the build architecture. Native tests use disposable fixtures and execute a copy of the binary outside the application bundle. Do not point tests at a real workspace database.
 
-The desktop application does not require Node.js on an end user's Mac. Node.js is used only by development tests. Optional communications require separately configured provider accounts and an internet connection. Opening a composer does not prove a sent message or delivery.
+The desktop application does not require Node.js on an end user's Mac. Node.js is used only by development tests. Provider/AI/background inbox integrations are outside the internal pilot. Native Apple Messages/Phone handoff remains available for explicitly reviewed actions. Opening a composer does not prove a sent message or delivery.
 
 ## Release readiness
 

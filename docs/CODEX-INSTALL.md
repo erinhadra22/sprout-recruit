@@ -1,6 +1,6 @@
 # Install and update Sprout Recruit with Codex
 
-Scope: supervised internal Sprout source-build pilot, Apple Silicon Mac. Current first-device baseline is macOS 26.6.2 (25G83). This is the agreed installation design and an engineering setup guide; the pilot recovery/onboarding gates are still unfinished. Do not onboard other recruiters with live data until the gates in [PILOT-DECISIONS.md](PILOT-DECISIONS.md) pass.
+Scope: supervised internal Sprout source-build pilot, Apple Silicon Mac. Current first-device baseline is macOS 26.6.2 (25G83). The repository now includes a guarded installer and code rollback tool. Installation acceptance on a separate standard user account and another recruiter device remains unverified; fixture tests are not device acceptance. Do not onboard other recruiters with live data until the gates in [PILOT-DECISIONS.md](PILOT-DECISIONS.md) pass.
 
 ## For the recruiter
 
@@ -38,16 +38,55 @@ The build script selects a compatible local SDK where known; otherwise it uses `
 
 When the user requests validation, run native and web fixture tests against disposable fixtures only, following README. Do not run write tests against the live database. Tests alone do not verify installation, restore or external services.
 
-### Install and acceptance
+### Repeatable installer
 
-This step must be implemented as a repeatable installation tool before recruiter rollout. Until then a developer should supervise it:
+Run from the repository root using the full, reviewed 40-character commit SHA. A branch name or arbitrary latest main is not an approval. Commit source changes first; the tool refuses dirty checkouts and does not fetch, reset, pull or change branches.
 
-- Quit the existing Sprout app. Preserve the old app bundle and a validated workspace backup. Refuse replacement while the app remains running.
-- Copy the verified staged app to a temporary sibling of `~/Applications/Sprout Recruit.app`, check its signature, then rename into place. Never replace the workspace directory. Avoid duplicate app copies and stale Desktop/Dock targets.
-- Fresh installs use `~/Library/Application Support/Sprout Recruit/SproutRecruit.sqlite`. Legacy installs retain their saved data path until a separate verified migration. Record the actual resolved path.
-- Open the installed bundle through Finder/normal macOS launch. Verify a visible window; quit/reopen; minimize/reopen through its icon; save/reopen a clearly labeled disposable test record; confirm operator attribution and date/time. Do not leave fabricated sample people mixed with recruiting data.
-- Verify recovery from the installed version before pilot acceptance. Record commit, version/build, OS/architecture, data path, pre-install backup, prior app location and validation outcome in a local receipt outside Git.
-- If macOS presents a security warning, capture the exact message for review. Do not disable security protections or automatically remove quarantine. Downloaded unsigned binaries may behave differently from local builds.
+```sh
+# Read-only preflight; replace the placeholder with the approved full SHA.
+zsh app/install-local.sh install --commit APPROVED_40_CHARACTER_SHA --check
+
+# Build, verify, snapshot any existing workspace, then install.
+zsh app/install-local.sh install --commit APPROVED_40_CHARACTER_SHA
+```
+
+The installer:
+
+1. Requires the recruiter's own account, Apple Silicon, macOS 26.6.x, an installed Swift toolchain, and every Sprout process quit. It never uses sudo, accepts toolchain licenses, downloads prerequisites, launches the app or terminates processes.
+2. Rejects symlinks in installation/workspace paths, parent traversal, unowned endpoints and unexpected private files inside the bundle. It verifies the bundle identifier, executable, arm64 architecture and code signature.
+3. Resolves the saved legacy workspace or fresh per-user workspace. Missing saved paths block installation. An original source-adjacent database without a saved preference blocks installation until the existing app has registered its path; it is never silently moved or replaced. `--workspace /absolute/path/SproutRecruit.sqlite` can identify an existing workspace but cannot override a conflicting saved preference.
+4. Builds with `SPROUT_OUTPUT` into a unique private staging folder under `~/Applications/.SproutRecruitInstallations/`. The staged executable must explicitly support the existing workspace schema, and existing data gets a verified native recovery snapshot before app replacement. The tool never copies a live WAL database by itself.
+5. Uses macOS atomic path exchange to replace an existing app at `~/Applications/Sprout Recruit.app`, then retains the old app as `previous.app`. A failed exchange leaves the old app in place. First installation uses a single rename. A lock prevents overlapping installer invocations. A power loss or force-kill can require supervised recovery from the retained transaction; no automatic data restore is attempted.
+6. Writes a private receipt under `~/Library/Application Support/Sprout Recruit Install Receipts/`. It records exact commit, date/time, OS, architecture, workspace path, backup result, version/build and whole-bundle/executable hashes. Receipts and app history stay outside Git and the dedicated workspace folder, and are not automatically pruned. Recovery snapshots use the native recovery root so they also appear in the app's recovery list.
+
+Fresh installs use `~/Library/Application Support/Sprout Recruit/SproutRecruit.sqlite`. Existing registered workspaces retain their original path and path-keyed credentials. The installer does not migrate legacy data or modify connected accounts. Keep using the installed bundle rather than older source/backup copies; inspect any existing Desktop/Dock shortcuts before retargeting them.
+
+The installer prints `installed-awaiting-acceptance`, **not** a claim that the device is ready for recruiting work. No pilot release tag is approved by the existence of this tool.
+
+### Acceptance after installation
+
+- Open `~/Applications/Sprout Recruit.app` through Finder. Verify a visible window, quit/reopen and minimize/icon reopen.
+- If startup shows Opening workspace and waits for file access, use Choose this workspace folder and select the exact existing folder displayed. Do not choose a different workspace or disable macOS security protections. Verify quit/reopen afterward; a rebuilt ad-hoc signature can require reconfirmation.
+- Complete operator onboarding. With a disposable workspace, save a clearly labeled test record, quit and reopen, and confirm identity, dates/times and persistence. Never leave fictional people mixed with recruiting data.
+- Make and restore a recovery snapshot against disposable data. Confirm attachments, drafts, tasks and schema compatibility. Never perform destructive restore acceptance on a live recruiting workspace.
+- Record exact receipt path, commit, version/build, OS/architecture, resolved data path and acceptance outcomes in a private local record. Run under a separate standard user and then another recruiter Mac before expanding the supported matrix. No OS account is created automatically.
+- If macOS presents a security warning, capture the exact message. Do not disable security protections or strip quarantine automatically. Downloaded unsigned binaries may behave differently from local builds.
+
+### Code rollback
+
+```sh
+zsh app/install-local.sh rollback --receipt "/absolute/path/to/Sprout Recruit Install Receipts/TRANSACTION.json"
+```
+
+Rollback verifies the receipt belongs to this installation, both retained/current bundle hashes and signatures still match, the app is quit, and the retained app explicitly supports the current workspace schema. It retains the newer bundle as `rolled-back.app` and restores the previous app. **It does not restore or delete workspace records.** If a workspace schema is too new, stop and have the maintainer choose a tested compatible app or supervised snapshot restore. Restoring an older snapshot can lose later edits and requires an explicit, informed decision.
+
+Older app versions without the recovery CLI marker cannot prove schema compatibility and are refused before execution. A successful code rollback does not undo a schema upgrade. Missing files, modified bundles, conflicting paths, stale installer locks or interrupted transactions require review; never delete data or use `git reset --hard` as a repair. An interrupted transaction retains its `prepared` receipt and both bundles; after an exchange, the old bundle may still be named `staged.app` (or the newer rollback bundle `previous.app`) until bookkeeping finishes. An engineer must compare receipt hashes with the actual target before repairing these app-only names.
+
+Installer fixture validation (temporary folders and stubbed macOS commands; no actual installation):
+
+```sh
+python3 -B app/Tests/installer_test.py
+```
 
 ### Update prompt to paste into Codex
 
@@ -62,3 +101,21 @@ Each recruiter has a separate local workspace. GitHub distributes code and instr
 ## Support and privacy
 
 Send Launch99 a concise reproduction, app version/commit, OS/architecture and redacted error details. Keep private contact data, correspondence, database backups and tokens out of GitHub issues and commits. Repository source access does not authorize uploading a recruiter's workspace. No automatic telemetry or remote access is enabled by these instructions.
+
+## Recovery and existing-workspace migration
+
+Version 0.5.0 supports schema 1 and adopts legacy schema 0 only after making a verified pre-upgrade snapshot. A future schema is refused. Local snapshots include consistent SQLite data, managed Knowledge/Attachments, file hashes, timestamps, and an inventory of linked external paths. External files and Keychain credentials are not copied. Recovery is local to this Mac; an approved device backup is still needed for loss or damage to the Mac.
+
+Settings → Local data recovery creates snapshots, lists verified recovery points, and selects a snapshot for restoration on the next app launch. Restore retains the complete previous workspace and uses a recovery journal around the folder switch. Snapshots are retained without automatic deletion. A daily snapshot is made on first launch each UTC day, and before bulk imports and schema upgrades. A continuously open session does not schedule a new daily snapshot until the next launch.
+
+A maintainer may copy a legacy workspace into a **new, nonexistent** dedicated folder while all Sprout processes are quit:
+
+```sh
+'/path/to/Sprout Recruit.app/Contents/MacOS/SproutRecruit' \
+  --migrate-workspace '/absolute/source/SproutRecruit.sqlite' \
+  --to '/absolute/new-workspace/SproutRecruit.sqlite'
+```
+
+This makes a verified source snapshot, preserves the source, copies managed documents, rewrites only managed path fields, and records record counts/date/time plus a reconnect requirement. It does not switch the app's saved workspace pointer or operational import scripts. Validate the returned destination and coordinate every existing reference before switching. Do not delete the source. The original development workspace remains in place until its operational queue/import references can move together.
+
+The app holds an exclusive workspace lease. Quit it before offline command-line writes, restores, or migration. Read-only SQLite inspection and consistent snapshot copying remain available; an attempted command is never a reason to bypass the lease or retry a message send.
