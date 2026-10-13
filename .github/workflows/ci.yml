@@ -1,0 +1,38 @@
+name: Desktop checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build desktop app
+        working-directory: app
+        shell: bash
+        run: SPROUT_SDK="$(xcrun --sdk macosx --show-sdk-path)" SPROUT_ARCH="$(uname -m)" zsh build.sh
+      - name: Run native fixture checks
+        working-directory: app
+        run: zsh test.sh
+      - name: Run interface fixture checks
+        working-directory: app
+        run: node --test Tests/*.test.cjs
+      # No workspace data, signing secrets, or build artifacts are uploaded.
