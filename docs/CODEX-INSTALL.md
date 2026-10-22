@@ -119,3 +119,7 @@ A maintainer may copy a legacy workspace into a **new, nonexistent** dedicated f
 This makes a verified source snapshot, preserves the source, copies managed documents, rewrites only managed path fields, and records record counts/date/time plus a reconnect requirement. It does not switch the app's saved workspace pointer or operational import scripts. Validate the returned destination and coordinate every existing reference before switching. Do not delete the source. The original development workspace remains in place until its operational queue/import references can move together.
 
 The app holds an exclusive workspace lease. Quit it before offline command-line writes, restores, or migration. Read-only SQLite inspection and consistent snapshot copying remain available; an attempted command is never a reason to bypass the lease or retry a message send.
+
+## Opening Erin’s installed app — October 22 verification
+
+Open the existing **Sprout Recruit** shortcut on the Desktop. It resolves to the canonical project app. To quit, use **Sprout Recruit → Quit Sprout Recruit** or Command-Q; open the same Desktop shortcut again to restart. If the app is running without a visible workspace, use **Sprout Recruit → Show Workspace**. If workspace access is requested, choose the exact existing workspace folder shown; Erin’s current records remain in `app/Data`. Do not open a backup bundle. The optimized installation passed Desktop-path launch, normal quit/reopen and Show Workspace checks; a literal Finder double-click was not exercised.

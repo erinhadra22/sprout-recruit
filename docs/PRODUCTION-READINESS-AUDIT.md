@@ -1,3 +1,7 @@
+# October 22 installation follow-through
+
+Optimized 0.5.0 (10) is now installed. Desktop shortcut path launch, normal quit/reopen and Show Workspace were verified with computer control. A literal Finder double-click was not exercised. Fresh optimized native checks, 50 web tests and 20 installer fixtures passed. All live record bodies matched before/after; database integrity OK. Evidence: `handoff/evidence/optimized-install-20261022/`. This supersedes the pending optimized-install statements in the historical October 13 audit below. Separate-user/device and realistic failure acceptance remain open. Manus email/text trial direction is recorded in PILOT-DECISIONS.md.
+
 # Sprout Recruit production readiness audit
 
 Updated October 13, 2026. Current implementation: **0.5.0 (10)**. The earlier installed launch audit used 0.4.8 (9).
