@@ -81,9 +81,9 @@ test('CSV failed commit keeps reviewed batch for a deliberate retry',async()=>{
  await state.csv.commit();assert.equal(commits,2);
 });
 test('imported profile shows last reimport separately from preserved first import',()=>{
- const context=vm.createContext({E:Model.escape,dateTime:x=>`STAMP:${x||'unknown'}`,S:{reviewIds:['fixture'],returnPage:'contacts',profileTab:'Source data'},D:{watchlists:[],customFields:[]},ib:()=>'',avatar:()=>'',selectOptions:()=>'',icon:()=>'',linkedinContactInfo:()=>'',emailCompanyReviewInfo:()=>'',CommunicationsUI:{profileActions:()=>''},pageTabs:()=>'',document:{addEventListener(){}}});
+ const context=vm.createContext({E:Model.escape,dateTime:x=>`STAMP:${x||'unknown'}`,S:{reviewIds:['fixture'],returnPage:'contacts',profileTab:'Source data'},D:{watchlists:[],customFields:[]},ib:()=>'',avatar:()=>'',selectOptions:()=>'',icon:()=>'',contactInfoLine:(label,_icon,value)=>`${label}: ${value}`,linkedinContactInfo:()=>'',emailCompanyReviewInfo:()=>'',CommunicationsUI:{profileActions:()=>''},pageTabs:()=>'',document:{addEventListener(){}}});
  vm.runInContext(fs.readFileSync(path.join(__dirname,'../Web/csv-import.js'),'utf8')+';globalThis.csv=CSVImportUI',context);
  const html=context.csv.renderProfile({id:'fixture',name:'Fixture Contact',createdAt:'2026-01-01T01:00:00Z',importedAt:'2026-01-02T01:00:00Z',lastImportedAt:'2026-01-03T01:00:00Z'});
- assert.match(html,/<label>Added to Sprout<\/label><span>STAMP:2026-01-01T01:00:00Z/);
- assert.match(html,/<label>Last imported<\/label><span>STAMP:2026-01-03T01:00:00Z/);
+ assert.match(html,/Added to Sprout: STAMP:2026-01-01T01:00:00Z/);
+ assert.match(html,/Last imported: STAMP:2026-01-03T01:00:00Z/);
 });

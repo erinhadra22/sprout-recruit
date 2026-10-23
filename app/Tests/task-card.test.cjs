@@ -42,6 +42,30 @@ test('saved draft activity opens its linked review task',()=>{
  assert.match(html,/data-action="task-detail" data-id="task-1"/);
  assert.match(html,/Open draft/);
 });
+test('verified imported emails appear once in the contact activity log with complete escaped bodies',()=>{
+ const c=appContext();
+ c.__fixture={agents:[{id:'agent-1',name:'Robert Example'},{id:'agent-2',name:'Other Contact'}],activities:[{id:'status-1',agentId:'agent-1',kind:'status',title:'Not interested',body:'Status updated',date:'2026-10-12T18:00:00Z',author:'Erin',pinned:false}],drafts:[],tasks:[],communications:[],externalMessages:[
+  {id:'external-sent',agentId:'agent-1',channel:'Email',provider:'gmail',direction:'outbound',from:'erin@example.com',to:'robert@example.com',subject:'A quick introduction',body:'Hi Robert,\n\nI am Erin.\nSecond paragraph.',occurredAt:'2026-10-12T16:00:00Z',providerMessageId:'gmail-sent-1',providerThreadId:'thread-1'},
+  {id:'external-reply',agentId:'agent-1',channel:'Email',provider:'gmail',direction:'inbound',from:'robert@example.com',to:'erin@example.com',subject:'Re: A quick introduction',body:'Thanks Erin, <not moving> & staying put.',occurredAt:'2026-10-12T19:00:00Z',providerMessageId:'gmail-reply-1',providerThreadId:'thread-1'},
+  {id:'external-other',agentId:'agent-2',channel:'Email',provider:'gmail',direction:'outbound',from:'erin@example.com',to:'other@example.com',subject:'Hello',body:'Unrelated private email',occurredAt:'2026-10-12T20:00:00Z',providerMessageId:'gmail-other-1',providerThreadId:'thread-2'}]};
+ vm.runInContext('D=globalThis.__fixture;S.activityKind="All"',c);
+ const html=c.__renderTimeline('agent-1');
+ assert.match(html,/3 activities/);
+ assert.match(html,/Email received · Re: A quick introduction/);
+ assert.match(html,/Email sent · A quick introduction/);
+ assert.ok(html.indexOf('Email received')<html.indexOf('Not interested')&&html.indexOf('Not interested')<html.indexOf('Email sent'));
+ assert.match(html,/Hi Robert,\n\nI am Erin\.\nSecond paragraph\./);
+ assert.match(html,/Thanks Erin, &lt;not moving&gt; &amp; staying put\./);
+ assert.match(html,/Message ID: gmail-reply-1 · Thread ID: thread-1/);
+ assert.doesNotMatch(html,/Unrelated private email|Imported correspondence|data-id="external-reply"/);
+ const globalHtml=c.__renderTimeline();
+ assert.match(globalHtml,/4 activities/);
+ assert.match(globalHtml,/Other Contact ·/);
+ assert.match(globalHtml,/Unrelated private email/);
+ vm.runInContext('S.activityKind="email"',c);
+ assert.match(c.__renderTimeline('agent-1'),/2 activities/);
+ assert.doesNotMatch(c.__renderTimeline('agent-1'),/Status updated/);
+});
 test('imported contact requires exact persisted identity and destination',()=>{
  const source=fs.readFileSync(path.join(root,'communications.js'),'utf8');
  const c=vm.createContext({console});vm.runInContext(source+';globalThis.__ui=CommunicationsUI',c);

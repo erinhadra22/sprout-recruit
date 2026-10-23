@@ -40,11 +40,11 @@ test('contact activity columns include available time and mark date-only history
  assert.match(helpers.agentCell({lastInteraction:'2026-10-12'},'lastInteraction'),/time not recorded/);
 });
 test('imported profile distinguishes first added timestamp from latest import',()=>{
- const context=vm.createContext({E:Model.escape,dateTime:x=>`STAMP:${x||'unknown'}`,S:{reviewIds:['fixture-live'],returnPage:'contacts',profileTab:'Source data'},D:{watchlists:[],customFields:[]},ib:()=>'',avatar:()=>'',selectOptions:()=>'',icon:()=>'',linkedinContactInfo:()=>'',emailCompanyReviewInfo:()=>'',CommunicationsUI:{profileActions:()=>''},pageTabs:()=>'',document:{addEventListener(){}}});
+ const context=vm.createContext({E:Model.escape,dateTime:x=>`STAMP:${x||'unknown'}`,S:{reviewIds:['fixture-live'],returnPage:'contacts',profileTab:'Source data'},D:{watchlists:[],customFields:[]},ib:()=>'',avatar:()=>'',selectOptions:()=>'',icon:()=>'',contactInfoLine:(label,_icon,value)=>`${label}: ${value}`,linkedinContactInfo:()=>'',emailCompanyReviewInfo:()=>'',CommunicationsUI:{profileActions:()=>''},pageTabs:()=>'',document:{addEventListener(){}}});
  vm.runInContext(fs.readFileSync(path.join(web,'csv-import.js'),'utf8')+';globalThis.ui=CSVImportUI',context);
  const html=context.ui.renderProfile({id:'fixture-live',name:'Fixture Contact',source:'CSV import <source>',courtedFields:{},createdAt:'2026-10-03T10:15:00Z',importedAt:'2026-10-12T21:35:00Z'});
- assert.match(html,/<label>Added to Sprout<\/label><span>STAMP:2026-10-03T10:15:00Z/);
- assert.match(html,/<label>Last imported<\/label><span>STAMP:2026-10-12T21:35:00Z/);
+ assert.match(html,/Added to Sprout: STAMP:2026-10-03T10:15:00Z/);
+ assert.match(html,/Last imported: STAMP:2026-10-12T21:35:00Z/);
  assert.match(html,/CSV import &lt;source&gt;/);
  assert.doesNotMatch(html,/October 2, 2026/);
 });

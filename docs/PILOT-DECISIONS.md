@@ -13,6 +13,14 @@ Confirmed by Erin on October 13, 2026. These decisions supersede the open Q1–Q
 | Updates/support | Manual, reviewed updates with install/support instructions in the repository, assisted by Codex. For this pilot, these are local source rebuilds; prebuilt signed updates require revisiting signing. No background updater or telemetry is authorized. |
 | Ownership | Private repository owned by Erin (connected account erinhadra22), proposed name sprout-recruit. Erin will share it with primary developer Launch99 Agency. No invitation sent and no account identity guessed. |
 
+## October 22 communication trial direction
+
+Erin will try Manus for email draft outbox and inbox management, and for texting through a newly dedicated agent phone number instead of iMessage. This supersedes the earlier iMessage direction for the texting trial. The dedicated number is user-reported; no Manus connection, message delivery, inbox coverage or app integration has been verified by this decision. This does not establish a change to the separate iPhone calling/recording requirements.
+
+Keep this trial separate from the local app installation acceptance. Before relying on Manus communication results in Sprout Recruit, establish a reviewed handoff/import format with account and recipient identity, channel, message/thread identifiers, timestamps, body and honest draft/sent/failed/unknown status. Verify inbox coverage and how received replies pause follow-ups. Confirm what data leaves the device and how access is disconnected. Outreach remains draft-only until Erin authorizes the specific send; reconcile uncertain results before any retry.
+
+See [AI and inbox connection workstream](../app/workstreams/AI-AND-INBOX-CONNECTION.md) for the bounded trial acceptance needs. No new provider purchase, account permission, deployment or scheduled outreach is authorized by this direction alone.
+
 ## Installation recommendation
 
 Use a reviewed commit or release tag, not an arbitrary latest main-branch snapshot. Codex opens the local checkout, reads [CODEX-INSTALL.md](CODEX-INSTALL.md), checks prerequisites, builds into a staging folder, and installs the verified bundle into `~/Applications/Sprout Recruit.app`. New workspaces live in `~/Library/Application Support/Sprout Recruit/`; source code and app replacement must not overwrite that folder.
