@@ -123,3 +123,7 @@ The app holds an exclusive workspace lease. Quit it before offline command-line 
 ## Opening Erin’s installed app — October 22 verification
 
 Open the existing **Sprout Recruit** shortcut on the Desktop. It resolves to the canonical project app. To quit, use **Sprout Recruit → Quit Sprout Recruit** or Command-Q; open the same Desktop shortcut again to restart. If the app is running without a visible workspace, use **Sprout Recruit → Show Workspace**. If workspace access is requested, choose the exact existing workspace folder shown; Erin’s current records remain in `app/Data`. Do not open a backup bundle. The optimized installation passed Desktop-path launch, normal quit/reopen and Show Workspace checks; a literal Finder double-click was not exercised.
+
+## Next-device acceptance
+
+Use [SECOND-MAC-ACCEPTANCE.md](SECOND-MAC-ACCEPTANCE.md) for exact prerequisites, commands and return evidence. Use standard per-user Application Support paths: temporary or aliased workspace locations remain unsupported pending path-normalization fixes.

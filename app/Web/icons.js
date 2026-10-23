@@ -24,6 +24,7 @@ message:'<path d="M21 11a8 8 0 0 1-8 8H6l-5 3 2-7a9 9 0 0 1-1-4 9 9 0 0 1 19 0Z"
 spark:'<path d="m12 3 2.7 6.3L21 12l-6.3 2.7L12 21l-2.7-6.3L3 12l6.3-2.7ZM20 2v4m-2-2h4"/>',
 phone:'<path d="m5 2 4 4-2 3a16 16 0 0 0 8 8l3-2 4 4-3 3C9 20 4 15 2 5Z"/>',
 mail:'<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m3 5 9 8 9-8"/>',
+linkedin:'<rect x="2" y="2" width="20" height="20" rx="2.3" fill="currentColor" stroke="none"/><circle cx="6.7" cy="7.1" r="1.15" fill="#fff" stroke="none"/><path d="M5.65 10h2.1v7.9h-2.1zM10.2 10h2v1.1c.5-.8 1.3-1.3 2.55-1.3 2.7 0 3.25 1.8 3.25 4.1v4h-2.1v-3.65c0-1.3-.04-2.5-1.65-2.5-1.6 0-1.95 1.2-1.95 2.43v3.72h-2.1z" fill="#fff" stroke="none"/>',
 pin:'<path d="m14 2 8 8-5 1-4 5-2-2-7 7 7-7-3-3 5-4Z"/>',
 location:'<path d="M20 9c0 6-8 13-8 13S4 15 4 9a8 8 0 0 1 16 0Z"/><circle cx="12" cy="9" r="3"/>',
 folder:'<path d="M3 5h7l2 3h9v13H3z"/>',
