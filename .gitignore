@@ -71,3 +71,6 @@
 **/*.mobileprovision
 **/*.provisionprofile
 **/.DS_Store
+/app/.local-signing-identity
+
+!app/Assets/SproutRecruit.entitlements

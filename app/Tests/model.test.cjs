@@ -2,6 +2,29 @@ const test=require('node:test');
 const assert=require('node:assert/strict');
 const M=require('../Web/model.js');
 const agents=[{id:'a',datasetId:'sample',name:'Taylor <Brooks>',city:'Austin',office:'Oak',status:'Contacted',move:'High',volume:3000000,years:4,units:8,active:0},{id:'b',datasetId:'sample',name:'Jamie',city:'Dallas',office:'Oak',status:'Do not contact',move:'Moderate',volume:8000000,years:8,units:16,active:3},{id:'c',datasetId:'live',name:'Manual',city:'Austin',manual:true,status:'Identified',move:'Unknown'}];
+test('unknown production remains distinct from a measured zero and partial totals',()=>{
+ assert.deepEqual(M.volumeCoverage([{volume:null},{}]),{total:null,knownCount:0,unknownCount:2});
+ assert.equal(M.volumeSummary([{volume:null}]),'Sales volume unknown');
+ assert.deepEqual(M.volumeCoverage([{volume:0},{volume:2000000},{volume:null},{volume:'5000000'}]),{total:2000000,knownCount:2,unknownCount:2});
+ assert.match(M.volumeSummary([{volume:0},{volume:null}]),/\$0.*known sales volume.*1 unknown/);
+ assert.deepEqual(M.volumeCoverage([]),{total:null,knownCount:0,unknownCount:0});
+});
+test('real discovery imports are never described as fictional contacts',()=>{
+ assert.match(M.contactSourceNote({id:'discovery-new',datasetId:'live',manual:false}),/Imported professional/);
+ assert.match(M.contactSourceNote({datasetId:'sample'}),/Fictional/);
+ assert.equal(M.contactSourceNote({datasetId:'live',manual:true}),'Entered locally.');
+ assert.match(M.contactSourceNote({}),/not been verified/);
+});
+test('Waco search and service-city filtering use reviewed footprint without inventing transaction city',()=>{
+ const contacts=[{id:'new',name:'Reviewed Professional',city:'',county:'Travis'},{id:'county',name:'Registry Only',county:'Waco'},{id:'office',name:'Office Only',officeCity:'Waco'},{id:'unreviewed',name:'Unreviewed Match',city:''}];
+ const evidence=[{agentId:'new',evidenceStatus:'reviewed',serviceCities:['Waco','Woodway'],source:{reference:'https://official.example/profile'},checkedAt:'2026-11-02'},{agentId:'unreviewed',serviceCities:['Waco'],source:{reference:'https://official.example'},checkedAt:'2026-11-02'}];
+ assert.deepEqual(M.filter(contacts,{q:'waco'},evidence).map(a=>a.id),['new']);
+ assert.deepEqual(M.filter(contacts,{serviceCity:'Waco'},evidence).map(a=>a.id),['new']);
+ assert.deepEqual(M.filter(contacts,{city:'Waco'},evidence),[]);
+ assert.equal(contacts[0].city,'');
+ assert.deepEqual(M.filter(contacts,{q:'Reviewed Professional'},evidence).map(a=>a.id),['new']);
+ assert.deepEqual(M.filter(contacts,{serviceCity:'Waco',status:'Contacted'},evidence),[]);
+});
 test('compound filters preserve missing values as unknown',()=>{assert.deepEqual(M.filter(agents,{city:'Austin',minVolume:2000000}).map(a=>a.id),['a']);assert.equal(M.filter(agents,{q:'oak',move:'Moderate'}).length,1);assert.equal(M.filter(agents,{maxVolume:1000000}).length,0);});
 test('zero active-listing filter excludes unknown and active records',()=>{for(const maxActive of ['0',0])assert.deepEqual(M.filter(agents,{maxActive}).map(a=>a.id),['a']);});
 test('timeline timestamps use local dates while task dates stay fixed',()=>{const old=process.env.TZ;process.env.TZ='America/Chicago';try{assert.equal(M.date('2026-09-29T01:30:00Z'),'Sep 28, 2026');assert.equal(M.date('2026-09-29'),'Sep 29, 2026');}finally{if(old===undefined)delete process.env.TZ;else process.env.TZ=old;}});

@@ -12,6 +12,10 @@
 .csv-map-modal .modal-body li{overflow-wrap:anywhere}
 .task-card-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:8px}
 .task-card-actions .button{font-size:11px;padding:5px 8px;min-height:27px}
+.task-detail-section{margin-top:18px;padding:13px 15px;border:1px solid var(--line);border-radius:9px;background:#f8faf8;overflow-wrap:anywhere}
+.task-detail-section h3{margin-bottom:7px;color:#536d5b}
+.task-detail-section p{white-space:pre-wrap;line-height:1.6}
+.task-detail-section ul{margin:7px 0 0;padding-left:18px;line-height:1.7}
 .task-message{padding:14px;border:1px solid var(--line);border-radius:10px;background:#fbfcfb}
 .task-message h3{margin-bottom:6px}
 .task-message .comm-message{white-space:pre-wrap;overflow-wrap:anywhere;margin:12px 0}
@@ -41,3 +45,12 @@
 
 /* First-run identity and recovery are local pilot features. */
 .onboarding{max-width:660px;margin:24px auto}.onboarding h1{margin:12px 0}.onboarding form{margin-top:24px}.recovery-list{padding-left:20px}.recovery-list li{margin:16px 0}.recovery-list .path{display:block;overflow-wrap:anywhere;margin-top:6px}
+
+/* Contact photos are loaded from the local photo store only when an avatar is visible. */
+.avatar{overflow:hidden;flex-shrink:0}.avatar-photo{display:block;width:100%;height:100%;object-fit:cover;object-position:center}
+
+.toast-link{margin-left:14px;color:inherit;text-decoration:underline;cursor:pointer;font-weight:600}.text-workbench{margin:20px 0}.text-workbench>h2{margin-bottom:12px}
+
+.outbox-highlight{outline:3px solid #85bdaa;outline-offset:3px}
+
+.button.danger{color:#a02626;border-color:#e6b8b8;background:#fff7f7}.button.danger:hover{background:#ffecec}

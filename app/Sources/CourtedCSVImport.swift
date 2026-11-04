@@ -14,7 +14,7 @@ struct CourtedImportPlan {
     var summary: Record {
         ["fileNames": files, "rows": agents.count, "newAgents": alreadyImported ? 0 : agents.count - conflicts,
          "conflicts": conflicts, "possibleMatches": possibleMatches, "alreadyImported": alreadyImported,
-         "token": token, "batchId": "courted-\(digest)", "sourceDate": "2026-10-02"]
+         "token": token, "batchId": "courted-\(digest)", "sourceDate": "unknown"]
     }
 }
 
@@ -100,7 +100,7 @@ enum CourtedCSV {
             "email":value("Email"), "phone":value("Phone"), "status":status,
             "source":"Courted CSV export", "datasetId":"live", "manual":false,
             "identityReviewState":"unreviewed", "sourceBatchId":batchId,
-            "sourceExportDate":"2026-10-02", "sourceMetricCutoff":"unknown",
+            "sourceExportDate":"unknown", "sourceMetricCutoff":"unknown",
             "importedAt":importedAt, "createdAt":importedAt, "liked":false, "disposition":"",
             "history":[], "transactions":[], "signals":[], "move":value("Potential to Move"),
             "growth":value("Potential to Grow"), "mls":value("MLS Affiliation"),
@@ -193,10 +193,23 @@ extension Store {
         guard plan.conflicts == 0 else { throw StoreError(message:"Existing Courted identities need review before this import.") }
         let backup = try consistentBackup(label:"before-courted-import")
         let batchId = "courted-" + plan.digest
+        let importedAt = Store.now()
         try transaction {
-            for agent in plan.agents { try put("agents",agent) }
-            try put("importBatches",["id":batchId,"source":"Courted CSV export","sourceDate":"2026-10-02",
-                "fileNames":plan.files,"fileDigest":plan.digest,"importedAt":Store.now(),
+            let lockedPlan = try courtedPlan(payload)
+            guard lockedPlan.token == token, !lockedPlan.alreadyImported, lockedPlan.conflicts == 0 else {
+                throw StoreError(message:"The workspace changed during backup. Review the import again.")
+            }
+            for var agent in plan.agents {
+                let id = agent["id"] as! String
+                agent["createdAt"] = importedAt; agent["importedAt"] = importedAt; agent["lastImportedAt"] = importedAt
+                try put("agents",agent)
+                try recordContactEvent(agentId: id, type: "contact.imported", source: "Courted CSV export",
+                    sourceRecordId: agent["courtedProfileURL"] as? String ?? "", batchId: batchId,
+                    fileNames: plan.files, occurredAt: importedAt, recordedAt: importedAt,
+                    dedupeKey: "import:" + batchId)
+            }
+            try put("importBatches",["id":batchId,"source":"Courted CSV export","sourceDate":"unknown",
+                "fileNames":plan.files,"fileDigest":plan.digest,"importedAt":importedAt,
                 "rows":plan.agents.count,"newAgents":plan.agents.count,"backupPath":backup])
             guard try all("agents").count == plan.existingCount + plan.agents.count else {
                 throw StoreError(message:"Import row counts did not reconcile.")

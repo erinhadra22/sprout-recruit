@@ -66,7 +66,63 @@ func runTaskEditTests() throws {
     _ = try store.command("task.update",["id":draftTaskId,"dueDate":Store.plusDays(4),"priority":"Low"])
     try rejects("draft wording is edited through its source draft") { _ = try store.command("task.update",["id":draftTaskId,"description":"Replace text silently"]) }
     try check(try store.get("tasks",draftTaskId)["draftBody"] as? String == "Fixture unsent text","reschedule preserves exact saved draft wording")
-    print("PASS: task edit/reschedule/reopen, validation rollback, draft linkage and recurrence idempotency.")
+    _ = try store.command("task.create",["agentId":agentId,"title":"Review verified reply","dueDate":Store.day(),"type":"Review","priority":"High","reviewKind":"Reply classification","reviewInstructions":"Read the exact inbound message before deciding.","sourceRefs":["gmail:thread-123"],"relatedMessageIds":["reply-456"],"decisionOptions":["Mark not interested","Hold for review"]])
+    let review = try store.all("tasks").first { $0["title"] as? String == "Review verified reply" }!
+    let reviewId = review["id"] as! String
+    try check(review["type"] as? String == "Review" && review["relatedMessageIds"] as? [String] == ["reply-456"],"review task metadata persists")
+    _ = try store.command("task.update",["id":reviewId,"type":"Approval","reviewInstructions":"Confirm the proposed action.","decisionOptions":["Approve","Request changes"]])
+    let approval = try store.get("tasks",reviewId)
+    try check(approval["type"] as? String == "Approval" && approval["reviewInstructions"] as? String == "Confirm the proposed action.","approval task fields remain editable")
+    for invalid: Record in [["sourceRefs":[""]],["relatedMessageIds":[42]],["decisionOptions":Array(repeating:"choice",count:11)],["reviewKind":17]] {
+        var payload=invalid;payload["id"]=reviewId
+        try rejects("invalid review metadata is rejected") { _ = try store.command("task.update",payload) }
+    }
+    _ = try store.command("task.create",["title":"Review general project decision","dueDate":Store.day(),"type":"Approval","priority":"High","reviewInstructions":"Choose an option.","decisionOptions":["Approve","Revise"]])
+    let general = try store.all("tasks").first { $0["title"] as? String == "Review general project decision" }!
+    let generalId = general["id"] as! String
+    try check(general["agentId"] == nil && general["decisionOptions"] as? [String] == ["Approve","Revise"],"general approval task persists without a contact")
+    _ = try store.command("task.complete",["id":generalId])
+    _ = try store.command("task.reopen",["id":generalId])
+    try check(try store.get("tasks",generalId)["completed"] as? Bool == false,"general task completes and reopens")
+
+    // Manual deletion removes only the selected task; historical communication
+    // evidence, the linked draft, and existing recurrence successors remain.
+    let draftBeforeDeletion = try JSONSerialization.data(withJSONObject:store.all("drafts"),options:.sortedKeys)
+    let contactsBeforeDeletion = try JSONSerialization.data(withJSONObject:store.all("agents"),options:.sortedKeys)
+    let linkedTaskBeforeDeletion = try JSONSerialization.data(withJSONObject:store.get("tasks",draftTaskId),options:.sortedKeys)
+    let generalBeforeDeletion = try JSONSerialization.data(withJSONObject:store.get("tasks",generalId),options:.sortedKeys)
+    let taskCountBeforeDeletion = try store.all("tasks").count
+    _ = try store.command("task.delete",["id":draftTaskId])
+    try check(try !store.all("tasks").contains { $0["id"] as? String == draftTaskId },"deleted draft-review task leaves task list")
+    try check(try store.all("tasks").count == taskCountBeforeDeletion - 1,"deletion removes exactly one task")
+    try check(draftBeforeDeletion == JSONSerialization.data(withJSONObject:store.all("drafts"),options:.sortedKeys),"deleting review preserves exact draft")
+    try check(contactsBeforeDeletion == JSONSerialization.data(withJSONObject:store.all("agents"),options:.sortedKeys),"deleting review preserves contact")
+    let successorId=next["id"] as! String
+    let successorBeforeDeletion=try JSONSerialization.data(withJSONObject:store.get("tasks",successorId),options:.sortedKeys)
+    _ = try store.command("task.delete",["id":id])
+    try check(successorBeforeDeletion == JSONSerialization.data(withJSONObject:store.get("tasks",successorId),options:.sortedKeys),"deleting recurring source preserves existing successor")
+    _ = try store.command("task.delete",["id":generalId])
+    try check(try !store.all("tasks").contains { $0["id"] as? String == generalId },"general workspace task can be deleted")
+    try rejects("deleted task cannot be edited") { _ = try store.command("task.update",["id":generalId,"title":"No longer exists"]) }
+    try rejects("unknown task deletion rejects") { _ = try store.command("task.delete",["id":"unknown-task"]) }
+    let archive = try store.get("deletedTasks",draftTaskId)
+    try check(archive["deletedAt"] as? String != nil && archive["task"] as? Record != nil,"deletion preserves original task and deletion time")
+    try check(linkedTaskBeforeDeletion == JSONSerialization.data(withJSONObject:archive["task"] as! Record,options:.sortedKeys),"deleted task archive retains exact original fields")
+    _ = try store.command("task.restore",["id":draftTaskId])
+    try check(linkedTaskBeforeDeletion == JSONSerialization.data(withJSONObject:store.get("tasks",draftTaskId),options:.sortedKeys),"restoring linked review returns exact original task")
+    try check(try !store.all("deletedTasks").contains { $0["id"] as? String == draftTaskId },"restoration removes archive")
+    _ = try store.command("task.restore",["id":generalId])
+    try check(generalBeforeDeletion == JSONSerialization.data(withJSONObject:store.get("tasks",generalId),options:.sortedKeys),"general task restores without fabricating a contact")
+    try rejects("restored task cannot be restored twice") { _ = try store.command("task.restore",["id":generalId]) }
+    try rejects("unknown archive restoration rejects") { _ = try store.command("task.restore",["id":"unknown-task"]) }
+    // An occupied task ID must never be overwritten with an older archived copy.
+    _ = try store.command("task.delete",["id":generalId])
+    let newer: Record=["id":generalId,"title":"Newer task with occupied ID","completed":false]
+    try store.put("tasks",newer)
+    try rejects("restoration cannot overwrite occupied task ID") { _ = try store.command("task.restore",["id":generalId]) }
+    try check(try store.get("tasks",generalId)["title"] as? String == "Newer task with occupied ID","rejected restoration preserves newer task")
+    try check(try store.get("deletedTasks",generalId)["task"] as? Record != nil,"rejected restoration preserves archive")
+    print("PASS: task edit/reschedule/reopen/delete/restore, validation rollback, preserved draft history and recurrence idempotency.")
 }
 
 func runSchemaUpgradeTests() throws {
