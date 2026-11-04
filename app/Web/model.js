@@ -2,12 +2,17 @@
 const Model = {
   escape(v) { return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); },
   money(v,compact=false) { if(v==null)return '—'; return new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:compact?1:0,...(compact?{notation:'compact'}:{})}).format(v); },
+  volumeCoverage(agents) { const known=agents.map(a=>a.volume).filter(v=>typeof v==='number'&&Number.isFinite(v)&&v>=0);return {total:known.length?known.reduce((sum,v)=>sum+v,0):null,knownCount:known.length,unknownCount:agents.length-known.length}; },
+  volumeSummary(agents) { const c=Model.volumeCoverage(agents);return c.total===null?'Sales volume unknown':`${Model.money(c.total,true)} known sales volume${c.unknownCount?` · ${c.unknownCount} unknown`:''}`; },
+  contactSourceNote(a) { return a.datasetId==='sample'||String(a.id||'').startsWith('sample-')?'Fictional contact details for this preview.':a.manual?'Entered locally.':a.datasetId==='live'?'Imported professional contact details; review source evidence before outreach.':'Source classification has not been verified.'; },
   initials(s) { return (s||'?').split(' ').filter(Boolean).slice(0,2).map(x=>x[0]).join(''); },
   date(s) { if(!s)return '—';return new Date(s.length===10?s+'T12:00:00':s).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); },
   dateTime(s) { if(!s)return '—'; if(s.length===10)return new Date(s+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})+' · time not recorded'; const d=new Date(s); return Number.isNaN(d.getTime())?'—':d.toLocaleString('en-US',{dateStyle:'medium',timeStyle:'short'}); },
-  filter(agents,f={}) { return agents.filter(a=>{
-    const text=[a.name,a.office,a.city,a.email,a.phone,a.mlsId,a.license].join(' ').toLowerCase();
-    return (!f.q||text.includes(f.q.toLowerCase()))&&(!f.city||a.city===f.city)&&(!f.move||a.move===f.move)&&(!f.status||a.status===f.status)&&(!f.minVolume||(a.volume??-1)>=Number(f.minVolume))&&(!f.maxVolume||(a.volume??Infinity)<=Number(f.maxVolume))&&(!f.minYears||(a.years??-1)>=Number(f.minYears))&&((f.maxActive==null||f.maxActive==='')||(a.active??Infinity)<=Number(f.maxActive));
+  recordedServiceCities(e) { return e?.evidenceStatus==='reviewed'&&e.source?.reference&&e.checkedAt&&Array.isArray(e.serviceCities)?e.serviceCities.filter(c=>typeof c==='string'&&c.trim()):[]; },
+  filter(agents,f={},evidence=[]) { const serviceByAgent=new Map(evidence.map(e=>[e.agentId,Model.recordedServiceCities(e)]));return agents.filter(a=>{
+    const cities=serviceByAgent.get(a.id)||[];
+    const text=[a.name,a.office,a.city,a.email,a.phone,a.mlsId,a.license,...cities].join(' ').toLowerCase();
+    return (!f.q||text.includes(f.q.toLowerCase()))&&(!f.city||a.city===f.city)&&(!f.serviceCity||cities.some(c=>c.toLowerCase()===String(f.serviceCity).toLowerCase()))&&(!f.move||a.move===f.move)&&(!f.status||a.status===f.status)&&(!f.minVolume||(a.volume??-1)>=Number(f.minVolume))&&(!f.maxVolume||(a.volume??Infinity)<=Number(f.maxVolume))&&(!f.minYears||(a.years??-1)>=Number(f.minYears))&&((f.maxActive==null||f.maxActive==='')||(a.active??Infinity)<=Number(f.maxActive));
   }); },
   candidates(agents,p={}) {return agents.filter(a=>(a.datasetId==='sample'||String(a.id||'').startsWith('sample-'))&&!a.manual&&!a.disposition&&!['Recruited','Not interested','Not qualified','Do not contact','Lost'].includes(a.status)).filter(a=>{
     const avg=a.units?a.volume/a.units:null;

@@ -28,6 +28,81 @@ func runRecoveryTests() throws {
         try store.put("settings",["id":"fixture","value":value])
         return path
     }
+    // A quiescent WAL database can lack sidecars while its main header remains
+    // in WAL mode. Some VFS builds retain empty sidecars after final close, so
+    // construct that valid state explicitly only inside this disposable fixture.
+    let quiescent=try fixture("quiescent-wal",value:"retained without sidecars")
+    do {
+        let writer=try WorkspaceRecovery.openDB(quiescent,write:true)
+        var writerClosed=false;defer{if !writerClosed{sqlite3_close(writer)}}
+        // Load the pager before checkpointing a newly opened connection.
+        try check(try WorkspaceRecovery.scalar(writer,"PRAGMA journal_mode").lowercased()=="wal","quiescent fixture uses WAL")
+        _=try WorkspaceRecovery.scalar(writer,"SELECT count(*) FROM records")
+        var persist:Int32=0
+        _=sqlite3_file_control(writer,nil,SQLITE_FCNTL_PERSIST_WAL,&persist)
+        let checkpoint=sqlite3_wal_checkpoint_v2(writer,nil,SQLITE_CHECKPOINT_TRUNCATE,nil,nil)
+        let closed=sqlite3_close(writer)
+        writerClosed=closed==SQLITE_OK
+        try check(checkpoint==SQLITE_OK && closed==SQLITE_OK,"quiescent fixture checkpoints and closes normally")
+    }
+    func removeEmptyClosedFixtureSidecars() throws {
+        let wal=URL(fileURLWithPath:quiescent+"-wal"),shm=URL(fileURLWithPath:quiescent+"-shm")
+        if fm.fileExists(atPath:wal.path){
+            try WorkspaceRecovery.regular(wal)
+            try check(try WorkspaceRecovery.status(wal).st_size==0,"only an empty checkpointed fixture WAL may be removed")
+        }
+        if fm.fileExists(atPath:shm.path){try WorkspaceRecovery.regular(shm)}
+        // All fixture handles are closed; no committed WAL frames remain.
+        for sidecar in [wal,shm] where fm.fileExists(atPath:sidecar.path){try fm.removeItem(at:sidecar)}
+    }
+    try removeEmptyClosedFixtureSidecars()
+    try check(!fm.fileExists(atPath:quiescent+"-wal") && !fm.fileExists(atPath:quiescent+"-shm"),"quiescent WAL fixture has no sidecar files")
+    let originalBytes=try Data(contentsOf:URL(fileURLWithPath:quiescent))
+    try check(originalBytes.count>20 && originalBytes[18]==2 && originalBytes[19]==2,"fixture retains a WAL-mode main header")
+    _=try WorkspaceRecovery.compatibility(quiescent)
+    _=try WorkspaceRecovery.compatibility(quiescent)
+    do {
+        let reader=try WorkspaceRecovery.openDB(quiescent);defer{sqlite3_close(reader)}
+        try check(try WorkspaceRecovery.scalar(reader,"PRAGMA query_only")=="1","validation and backup readers are query-only")
+        let writeAttempt=sqlite3_exec(reader,"UPDATE records SET body='{}' WHERE kind='settings' AND id='fixture'",nil,nil,nil)
+        try check(writeAttempt==SQLITE_READONLY,"reader rejects SQL record writes despite sidecar initialization permission")
+        try check(try WorkspaceRecovery.scalar(reader,"SELECT json_extract(body,'$.value') FROM records WHERE kind='settings' AND id='fixture'")=="retained without sidecars","attempted reader write preserves original record")
+    }
+    try check(try Data(contentsOf:URL(fileURLWithPath:quiescent))==originalBytes,"repeated validation leaves every main-database byte unchanged")
+    // Sidecar retention after reads is VFS-dependent. Recreate the same absent-
+    // sidecar state, with empty-WAL verification, before testing source backup.
+    try removeEmptyClosedFixtureSidecars()
+    let quiescentReceipt=try WorkspaceRecovery.snapshot(quiescent,reason:"quiescent-wal")
+    let quiescentSnapshot=URL(fileURLWithPath:quiescentReceipt["snapshotPath"] as! String)
+    let readonlyDB=quiescentSnapshot.appendingPathComponent("workspace.sqlite")
+    try check(try value(readonlyDB.path)=="retained without sidecars","supported snapshot reads a quiescent WAL source")
+    try check(try Data(contentsOf:URL(fileURLWithPath:quiescent))==originalBytes,"snapshot leaves quiescent source bytes unchanged")
+    do {
+        let reopened=try Store(path:quiescent,seed:false)
+        try check(try reopened.get("settings","fixture")["value"] as? String=="retained without sidecars","normal Store startup succeeds after missing-sidecar validation")
+    }
+    let readonlyBytes=try Data(contentsOf:readonlyDB)
+    try fm.setAttributes([.posixPermissions:0o400],ofItemAtPath:readonlyDB.path)
+    try fm.setAttributes([.posixPermissions:0o500],ofItemAtPath:quiescentSnapshot.path)
+    do {
+        defer {
+            try? fm.setAttributes([.posixPermissions:0o700],ofItemAtPath:quiescentSnapshot.path)
+            try? fm.setAttributes([.posixPermissions:0o600],ofItemAtPath:readonlyDB.path)
+        }
+        _=try WorkspaceRecovery.validate(quiescentSnapshot)
+        let reader=try WorkspaceRecovery.openDB(readonlyDB.path)
+        let readonly=sqlite3_db_readonly(reader,"main")
+        let queryOnly=try WorkspaceRecovery.scalar(reader,"PRAGMA query_only")
+        sqlite3_close(reader)
+        try check(readonly==1 && queryOnly=="1","genuinely read-only snapshot remains a read-only query source")
+        let copied=temp.appendingPathComponent("copy-of-readonly.sqlite")
+        try WorkspaceRecovery.copyDatabase(readonlyDB.path,copied.path)
+        _=try WorkspaceRecovery.compatibility(copied.path)
+        try check(try value(copied.path)=="retained without sidecars" && Data(contentsOf:readonlyDB)==readonlyBytes,"read-only backup source remains usable and unchanged")
+    }
+    let absent=temp.appendingPathComponent("must-not-create.sqlite").path
+    try rejects("validation reader cannot create a missing database") { let db=try WorkspaceRecovery.openDB(absent);sqlite3_close(db) }
+    try check(!fm.fileExists(atPath:absent),"read-intent open never creates a database")
     let path = try fixture("workspace")
     let parent = URL(fileURLWithPath:path).deletingLastPathComponent()
     for folder in ["Knowledge","Attachments"] {
@@ -133,5 +208,5 @@ func runRecoveryTests() throws {
         let renewed=try (WorkspaceRecovery.list(path)["snapshots"] as! [Record]).filter { $0["reason"] as? String == "daily" }
         try check(renewed.count == 1 && renewed[0]["path"] as? String != dailyBefore[0]["path"] as? String,"damaged daily snapshot does not suppress a new verified copy; only valid points are listed")
     }
-    print("PASS: recovery WAL consistency, managed attachments, corruption restore, prior workspace retention, wrong target, schema refusal, tamper/link/path rejection and interrupted-swap recovery.")
+    print("PASS: recovery missing-sidecar WAL validation and backup, query-only/read-only preservation, WAL consistency, managed attachments, corruption restore, prior workspace retention, wrong target, schema refusal, tamper/link/path rejection and interrupted-swap recovery.")
 }

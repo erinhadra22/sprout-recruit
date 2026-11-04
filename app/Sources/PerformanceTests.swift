@@ -1,6 +1,7 @@
 import Foundation
 
 func runPerformanceTests() throws {
+    try runProductionSeriesTests()
     let dir=FileManager.default.temporaryDirectory.appendingPathComponent("sprout-performance-tests-"+UUID().uuidString)
     defer{try? FileManager.default.removeItem(at:dir)}
     let path=dir.appendingPathComponent("fixture.sqlite").path
@@ -116,5 +117,165 @@ func runPerformanceTests() throws {
     try check(try store!.all("reports").count == 1,"saved reports survive reopen")
     let empty=try store!.managerReport(["fromDate":"\(year)-01-01","toDate":"\(year)-01-02","timeZone":"America/Chicago"])
     try check(((empty["rates"] as! Record)["taskCompletion"] as! Record)["percent"] is NSNull,"empty rate stays unknown rather than zero percent")
-    print("PASS: sourced performance persistence/revisions, atomic import, unknown vs zero, dual-side totals, report evidence/dedupe/timezone/denominators and frozen export.")
+    // Gmail notices and calendar RSVP messages are not human replies. Keep
+    // legacy unclassified imports usable without accepting new unknown classes.
+    for (id,classification) in [("human","received_reply"),("notice","automatic_notice"),("rsvp","meeting_response"),("future","unsupported_class"),("legacy","")] {
+        var message:Record=["id":id,"agentId":"real-b","provider":"gmail","providerMessageId":"fixture-"+id,"channel":"Email","direction":"inbound","occurredAt":day+"T17:00:00Z"]
+        if !classification.isEmpty { message["messageClass"]=classification }
+        try store!.put("externalMessages",message)
+    }
+    let classified=try store!.managerReport(filter),classifiedMetrics=classified["metrics"] as! [String:Int]
+    try check(classifiedMetrics["emailReplies"] == 2 && classifiedMetrics["meetingResponses"] == 1,"human and legacy replies stay separate from calendar RSVP and notices")
+    let classifiedExclusions=classified["exclusions"] as! [String:Int]
+    try check(classifiedExclusions["automaticNotices"] == 1 && classifiedExclusions["unsupportedReplyClasses"] == 1,"automatic notices and unsupported message classes are explicitly excluded")
+    try check(classified["distinctRespondingContacts"] as? Int == 1,"only actual reply records contribute to responding contacts")
+    let classifiedText=Store.managerReportText(classified)
+    try check(classifiedText.contains("Meeting responses imported: 1"),"manager export labels meeting responses independently")
+    try runWeeklyReportDeliveryPlanTests()
+    try runMeetingReportMetricsTests()
+    print("PASS: sourced performance persistence/revisions, atomic import, unknown vs zero, dual-side totals, report evidence/dedupe/timezone/denominators, reply classification and frozen export.")
+}
+
+
+// Source fixtures only. None of these records represent real agents or production.
+private func runProductionSeriesTests() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("sprout-production-series-"+UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at:dir) }
+    let path = dir.appendingPathComponent("fixture.sqlite").path
+    var store:Store? = try Store(path:path,seed:false)
+    func check(_ condition:Bool,_ message:String)throws { if !condition { throw StoreError(message:"Production series test failed: "+message) } }
+    func fails(_ body:()throws->Void)throws { do { try body() } catch { return }; throw StoreError(message:"Production series validation should fail") }
+    let year=Int(Store.day().prefix(4))!-1
+    try store!.put("agents",["id":"production-agent","name":"Fixture production agent","manual":true,"status":"Do not contact","localOverrides":["office"],"office":"User brokerage","history":[["note":"Preserve me"]]])
+    try store!.put("agents",["id":"production-other","name":"Fixture second agent","manual":true])
+    try store!.put("teams",["id":"production-team","name":"Fixture team","brokerage":"Fixture brokerage"])
+    try store!.put("activities",["id":"production-note","agentId":"production-agent","kind":"note","body":"Keep this note"])
+    try store!.put("tasks",["id":"production-promise","agentId":"production-agent","title":"Promised callback","completed":false])
+    let originalAgent = try store!.get("agents","production-agent")
+    var individual:Record=["agentId":"production-agent","year":year,"periodStart":"\(year)-01-01","periodEnd":"\(year)-12-31","asOfDate":"\(year)-12-31","coverage":"complete","attribution":"individual","source":["label":"Fixture licensed export","reference":"fixture://annual","method":"manual","providerId":"fixture-provider","recordIds":["0001","0002"],"checkedAt":Store.day()],"expectedRevision":0,"changeReason":"Fixture source evidence","buyerUnits":4,"buyerVolume":2_000_000,"sellerUnits":2,"sellerVolume":1_000_000,"dualSidedUnits":0,"dualSidedVolume":0]
+    _ = try store!.command("performance.save",individual)
+    let legacyID="production-agent:\(year)"
+    try check(try store!.get("performance",legacyID)["schemaVersion"] as? Int == 1,"legacy individual ID remains unchanged")
+    var team=individual;team["periodType"]="annual";team["teamId"]="production-team";team["attribution"]="team";team["buyerUnits"]=20;team["buyerVolume"]=10_000_000
+    _ = try store!.command("performance.save",team)
+    let teamRow=try store!.all("performance").first{$0["teamId"] as? String == "production-team"}!
+    let teamID=teamRow["id"] as! String
+    try check(teamID != legacyID && !Store.performanceIsIndividual(teamRow),"team series is distinct and cannot qualify as individual")
+    try check(Store.performanceIsIndividual(try store!.get("performance",legacyID)),"legacy individual evidence remains eligible for individual review")
+    try check(try store!.all("performance").count == 2,"one agent/year can retain separate individual and team figures")
+    _ = try store!.command("performance.save",team)
+    try check(try store!.get("performance",teamID)["revision"] as? Int == 1,"team replay does not duplicate or revise")
+    var teamOnly=team;teamOnly.removeValue(forKey:"agentId");teamOnly["expectedRevision"]=1;teamOnly["recordId"]=teamID;teamOnly["changeReason"]="Remove optional contact link"
+    _ = try store!.command("performance.save",teamOnly)
+    try check(try store!.get("performance",teamID)["agentId"] as? String == "","team may be represented independently of a member")
+    var invalidTeam=team;invalidTeam["teamId"]="missing-team";try fails{_ = try store!.command("performance.save",invalidTeam)}
+    invalidTeam=team;invalidTeam["attribution"]="individual";try fails{_ = try store!.command("performance.save",invalidTeam)}
+    invalidTeam=team;invalidTeam.removeValue(forKey:"teamId");try fails{_ = try store!.command("performance.save",invalidTeam)}
+    var explicitDuplicate=individual;explicitDuplicate["periodType"]="annual"
+    try fails{_ = try store!.command("performance.save",explicitDuplicate)}
+    var legacyEdit=individual;legacyEdit["periodType"]="annual";legacyEdit["recordId"]=legacyID;legacyEdit["expectedRevision"]=1;legacyEdit["changeReason"]="Review legacy source and preserve its ID"
+    _ = try store!.command("performance.save",legacyEdit)
+    let migrated=try store!.get("performance",legacyID)
+    try check(migrated["schemaVersion"] as? Int == 2 && (migrated["revisions"] as? [Record])?.count == 1,"reviewed legacy edit retains ID and prior source history")
+    var switchAttribution=legacyEdit;switchAttribution["attribution"]="unknown";switchAttribution["expectedRevision"]=2
+    try fails{_ = try store!.command("performance.save",switchAttribution)}
+    var overlap=legacyEdit;overlap.removeValue(forKey:"recordId");overlap["periodStart"]="\(year)-03-01";overlap["expectedRevision"]=0;overlap["coverage"]="partial"
+    try fails{_ = try store!.command("performance.save",overlap)}
+    var ltm=individual;ltm["periodType"]="ltm";ltm["periodStart"]="\(year-1)-07-01";ltm["periodEnd"]="\(year)-06-30";ltm["asOfDate"]="\(year)-07-01"
+    _ = try store!.command("performance.save",ltm)
+    let ltmRow=try store!.all("performance").first{Store.performancePeriodType($0)=="ltm"}!
+    try check(Store.performanceIsFullPeriod(ltmRow),"LTM dates are an explicitly full dated window")
+    try check(try store!.all("performance").count == 3,"annual and LTM coexist without adding their overlapping totals")
+    var nextLTM=ltm;nextLTM["periodStart"]="\(year-1)-08-01";nextLTM["periodEnd"]="\(year)-07-31";nextLTM["asOfDate"]="\(year)-08-01"
+    _ = try store!.command("performance.save",nextLTM)
+    var competing=nextLTM;competing["periodStart"]="\(year-1)-09-01";competing["periodEnd"]="\(year)-08-31";competing["asOfDate"]="\(year)-09-01";competing["source"]=["label":"Different coverage","method":"import","providerId":"other-provider"]
+    try fails{_ = try store!.command("performance.import",["records":[competing]])}
+    var shortLTM=ltm;shortLTM["periodStart"]="\(year)-01-01"
+    try fails{_ = try store!.command("performance.save",shortLTM)}
+    var checkedBeforeAsOf=individual;checkedBeforeAsOf["source"]=["label":"Bad checked date","method":"manual","checkedAt":"\(year)-01-01"]
+    try fails{_ = try store!.command("performance.save",checkedBeforeAsOf)}
+    var duplicateRefs=individual;duplicateRefs["source"]=["label":"Duplicate raw identifiers","method":"manual","recordIds":["001","001"]]
+    try fails{_ = try store!.command("performance.save",duplicateRefs)}
+    var imported=individual;imported["agentId"]="production-other";imported["periodType"]="annual";imported["source"]=["label":"Fixture licensed export","method":"import","providerId":"fixture-provider"]
+    for key in ["buyerUnits","buyerVolume","sellerUnits","sellerVolume","dualSidedUnits","dualSidedVolume"] { imported[key]=NSNull() }
+    imported["buyerUnits"]=0;imported["buyerVolume"]=0
+    let before=try store!.all("performance").count
+    var missingAgent=imported;missingAgent["agentId"]="not-present"
+    try fails{_ = try store!.command("performance.import",["records":[imported,missingAgent]])}
+    try check(try store!.all("performance").count == before,"multi-agent invalid input leaves all records unchanged")
+    var conflictingImport=legacyEdit;conflictingImport["source"]=["label":"Fixture licensed export","method":"import","providerId":"fixture-provider"];conflictingImport["expectedRevision"]=0;conflictingImport["buyerUnits"]=99
+    try fails{_ = try store!.command("performance.import",["records":[imported,conflictingImport]])}
+    try check(try store!.all("performance").count == before,"late stale revision rolls back earlier valid row")
+    _ = try store!.command("performance.import",["records":[imported]])
+    let importedRow=try store!.all("performance").first{$0["agentId"] as? String == "production-other"}!
+    let importedID=importedRow["id"] as! String
+    try check(importedRow["buyerVolume"] as? Double == 0 && importedRow["sellerVolume"] is NSNull,"multi-agent annual import preserves zero and unknown separately")
+    try check(Store.performanceTotals(importedRow)["uniqueVolume"] is NSNull,"unknown overlap never creates an individual volume claim")
+    _ = try store!.command("performance.import",["records":[imported]])
+    try check(try store!.get("performance",importedID)["revision"] as? Int == 1,"bulk replay is idempotent")
+    var otherSource=imported;otherSource["recordId"]=importedID;otherSource["expectedRevision"]=1;otherSource["source"]=["label":"Competing source","method":"import","providerId":"other-provider"]
+    try fails{_ = try store!.command("performance.import",["records":[otherSource]])}
+    var aggregate=imported;aggregate["recordId"]=importedID;aggregate["expectedRevision"]=1;aggregate["reportedVolume"]=2_500_000;aggregate["volumeDefinition"]="unique_closed_volume";aggregate["changeReason"]="Explicitly defined source aggregate"
+    _ = try store!.command("performance.import",["records":[aggregate]])
+    let aggregateRow=try store!.get("performance",importedID)
+    try check(Store.performanceTotals(aggregateRow)["uniqueVolume"] as? Double == 2_500_000 && aggregateRow["sellerVolume"] is NSNull && aggregateRow["dualSidedVolume"] is NSNull,"explicit source aggregate supplies volume without invented side breakdown")
+    var genericVolume=aggregate;genericVolume.removeValue(forKey:"volumeDefinition");try fails{_ = try store!.command("performance.import",["records":[genericVolume]])}
+    var conflictingAggregate=legacyEdit;conflictingAggregate["expectedRevision"]=2;conflictingAggregate["reportedVolume"]=99;conflictingAggregate["volumeDefinition"]="unique_closed_volume"
+    try fails{_ = try store!.command("performance.save",conflictingAggregate)}
+    try check(NSDictionary(dictionary:try store!.get("agents","production-agent")).isEqual(to:originalAgent),"production import preserves recruiter fields, suppression and history")
+    try check(try store!.get("activities","production-note")["body"] as? String == "Keep this note" && store!.get("tasks","production-promise")["completed"] as? Bool == false,"notes and promised follow-up survive")
+    store=nil;store=try Store(path:path,seed:false)
+    try check(try store!.get("performance",teamID)["revision"] as? Int == 2 && store!.get("performance",legacyID)["revision"] as? Int == 2,"separate series and legacy history persist after restart")
+    try check(try store!.get("performance",importedID)["sellerVolume"] is NSNull,"unknown source fields persist after restart")
+    print("PASS: independent individual/team/LTM series, legacy IDs/history, provenance collisions, multi-agent atomicity, replay, null/zero, preserved suppression/follow-ups and restart readback.")
+}
+
+func runMeetingReportMetricsTests() throws {
+    let directory=FileManager.default.temporaryDirectory.appendingPathComponent("sprout-meeting-metrics-"+UUID().uuidString)
+    defer{try? FileManager.default.removeItem(at:directory)}
+    let store=try Store(path:directory.appendingPathComponent("fixture.sqlite").path,seed:false)
+    let year=Int(Store.day().prefix(4))!-1,day="\(year)-06-15",later="\(year)-06-16"
+    let filter:Record=["fromDate":"\(year)-06-01","toDate":"\(year)-06-30","timeZone":"America/Chicago"]
+    try store.put("agents",["id":"real-one","name":"Private Name","manual":true])
+    try store.put("agents",["id":"real-two","name":"Other Private Name","manual":true])
+    for (id,title) in [("conversation-one","Call — Connected"),("conversation-two","Call — Connected"),("conversation-three","Call — connected"),("completed-call","Call — Completed")] {
+        try store.put("activities",["id":id,"agentId":"real-one","kind":"interaction","title":title,"date":day+"T16:00:00Z"])
+    }
+    try store.put("workflows",["id":"call-workflow-three","agentId":"real-one","interactionId":"conversation-three","callId":"exact-call-three","source":"user_confirmed","outcome":"connected","occurredAt":day+"T16:00:00Z","occurredOn":day])
+    try store.put("tasks",["id":"completed-meeting-task","agentId":"real-one","type":"Meeting","completed":true,"completedAt":later+"T16:00:00Z","dueDate":later])
+    func check(_ condition:Bool,_ message:String)throws{if !condition{throw StoreError(message:"Meeting report metrics: "+message)}}
+    func booking(_ id:String,_ link:String,_ extra:Record=[:])throws {
+        var row:Record=["id":id,"agentId":"real-one","state":"booked","status":"confirmed","bookedAt":later+"T17:00:00Z","startsAt":later+"T18:00:00Z","endsAt":later+"T18:30:00Z","timeZone":"America/Chicago","source":"google_calendar","providerVerifiedAt":later+"T17:00:01Z","googleEventId":"google-"+id]
+        if !link.isEmpty{row["linkedConversationID"]=link}
+        for(key,value) in extra{row[key]=value}
+        try store.put("meetings",row)
+    }
+    let initial=try store.managerReport(filter),initialMetrics=initial["metrics"] as! [String:Int]
+    try check(initialMetrics["calls"]==4 && initialMetrics["connectedCalls"]==3,"only explicit conversations count; lowercase controlled workflow outcome is supported")
+    try check(initialMetrics["appointmentsBooked"]==0 && initialMetrics["meetingsHeld"]==0,"completed Meeting task and expired event times do not establish a meeting")
+    try check(((initial["rates"] as! Record)["conversationToMeeting"] as! Record)["percent"] is NSNull,"no verified conversion remains unavailable instead of an invented zero")
+    try booking("meeting-one","activity:conversation-one",["heldAt":later+"T18:15:00Z","heldRecordedAt":later+"T18:16:00Z","heldSource":"user_confirmed"])
+    try booking("meeting-two","activity:conversation-one",["status":"cancelled"])
+    try booking("meeting-three","workflow:call-workflow-three")
+    try booking("future","activity:conversation-two",["bookedAt":"\(year)-07-01T17:00:00Z"])
+    var report=try store.managerReport(filter),m=report["metrics"] as! [String:Int],rate=(report["rates"] as! Record)["conversationToMeeting"] as! Record
+    try check(m["appointmentsBooked"]==3 && m["meetingsHeld"]==1,"verified booking events survive later cancellation; held requires explicit outcome")
+    try check(m["convertedConversations"]==2 && rate["numerator"] as? Int==2 && rate["denominator"] as? Int==3,"multiple bookings for one conversation count once and workflow/activity aliases agree")
+    try check(abs((rate["percent"] as? Double ?? 0)-200.0/3)<0.0001,"linked conversation conversion has an explicit denominator")
+    let email=try Store.weeklyReportEmailContent(report,plan:["recipients":["cody@sprouthomes.com"],"subject":"Weekly recruiting activity"])
+    let body=email["body"] as? String ?? ""
+    try check(body.contains("Appointments booked: 3") && body.contains("Meetings held: 1") && body.contains("2 / 3"),"aggregate email includes requested booking/held/conversion metrics")
+    try check(!body.contains("Private Name") && !body.contains("google-meeting") && body.contains("may be missing"),"email omits contact detail and exposes incomplete-history limits")
+    try booking("unlinked","")
+    report=try store.managerReport(filter);rate=(report["rates"] as! Record)["conversationToMeeting"] as! Record
+    try check(rate["percent"] is NSNull && rate["unlinkedBookings"] as? Int==1,"unlinked bookings make conversion unverifiable instead of implying a rate")
+    try booking("wrong-agent","activity:conversation-two",["agentId":"real-two"])
+    try booking("before-call","activity:conversation-two",["bookedAt":day+"T15:00:00Z"])
+    try booking("unverified","activity:conversation-two",["state":"prepared"])
+    report=try store.managerReport(filter);m=report["metrics"] as! [String:Int]
+    let exclusions=report["exclusions"] as! [String:Int]
+    try check(m["appointmentsBooked"]==6 && exclusions["invalidMeetingLinks"]==2 && exclusions["unverifiedMeetings"]==1,"cross-contact and before-call links cannot convert; prepared provider attempts cannot count as bookings")
+    let empty=try store.managerReport(["fromDate":"\(year)-01-01","toDate":"\(year)-01-02","timeZone":"America/Chicago"])
+    try check(((empty["rates"] as! Record)["conversationToMeeting"] as! Record)["percent"] is NSNull,"zero conversations has no conversion percentage")
+    print("PASS: explicit conversations, verified booking and held outcomes, exact call linkage, deduplicated conversions, invalid/missing evidence and aggregate weekly email")
 }

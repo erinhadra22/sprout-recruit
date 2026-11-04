@@ -27,7 +27,7 @@ private struct GenericPlan {
 private enum GenericCSV {
     static let coreTargets = [
         "name", "firstName", "lastName", "office", "city", "email", "phone", "linkedinUrl",
-        "courtedProfileURL", "mls", "mlsId", "license", "brand", "officeCity",
+        "courtedProfileURL", "mls", "mlsId", "license", "licenseRaw", "licenseJurisdiction", "licenseJurisdictionRaw", "licenseType", "licenseTypeRaw", "sourceProvider", "sourceAgentId", "brand", "officeCity",
         "officeZip", "mlsHomeCity", "mlsHomeZip", "years", "officeYears",
         "volume", "change", "units", "buySideVolume", "listSideVolume",
         "buySideUnits", "listSideUnits", "active", "pending", "rentals",
@@ -51,7 +51,9 @@ private enum GenericCSV {
         "linkedin":"linkedinUrl", "linkedinurl":"linkedinUrl", "linkedinprofile":"linkedinUrl",
         "linkedinprofileurl":"linkedinUrl",
         "phonenumber":"phone", "courtedprofileurl":"courtedProfileURL", "profileurl":"courtedProfileURL",
-        "mlsaffiliation":"mls", "mls":"mls", "mlsid":"mlsId", "licensenumber":"license",
+        "mlsaffiliation":"mls", "mls":"mls", "mlsid":"mlsId", "licensenumber":"license", "license":"license",
+        "licenseraw":"licenseRaw", "licensejurisdiction":"licenseJurisdiction", "licensestate":"licenseJurisdiction",
+        "licensejurisdictionraw":"licenseJurisdictionRaw", "licensetype":"licenseType", "licensetyperaw":"licenseTypeRaw", "sourceprovider":"sourceProvider", "sourceagentid":"sourceAgentId",
         "brand":"brand", "officecity":"officeCity", "officezip":"officeZip",
         "agentsmlshomecity":"mlsHomeCity", "agentsmlshomezip":"mlsHomeZip",
         "yearsindustry":"years", "yearsinindustry":"years", "yearsinoffice":"officeYears",
@@ -117,16 +119,7 @@ private enum GenericCSV {
         return result
     }
     static func identityKeys(_ fields: [String:Any]) -> [String] {
-        var keys: [String] = []
-        let profile = (fields["courtedProfileURL"] as? String ?? "").trimmingCharacters(in:.whitespacesAndNewlines)
-        if !profile.isEmpty, let url = URLComponents(string:profile), url.scheme?.lowercased() == "https",
-           url.host?.lowercased() == "brokerage.courted.io", !url.path.isEmpty, url.path != "/" {
-            keys.append("profile:" + (url.host! + url.path).lowercased().trimmingCharacters(in:CharacterSet(charactersIn:"/")))
-        }
-        let mls = (fields["mls"] as? String ?? "").trimmingCharacters(in:.whitespacesAndNewlines)
-        let id = (fields["mlsId"] as? String ?? "").trimmingCharacters(in:.whitespacesAndNewlines)
-        if !mls.isEmpty && !id.isEmpty { keys.append("mls:" + norm(mls) + ":" + norm(id)) }
-        return keys
+        AgentIdentity.keys(fields)
     }
     static func identity(_ fields: [String:Any]) -> String? {
         identityKeys(fields).first
@@ -218,12 +211,8 @@ extension Store {
         let digest = CourtedCSV.hash(Data((files.map{$0.digest}.sorted().joined(separator:"|") + "|" + CourtedCSV.hash(mappingData)).utf8))
         let batchId = "generic-" + digest
         let existing = try all("agents")
-        var existingByIdentity: [String:[Record]] = [:]
-        for agent in existing {
-            for key in GenericCSV.identityKeys(agent) { existingByIdentity[key,default:[]].append(agent) }
-        }
         var agents: [Record] = [], hard: [String] = [], newCount = 0, updateCount = 0, possible = 0
-        var seen = Set<String>()
+        var seen = Set<String>(), seenAgentIDs = Set<String>()
         let importedAt = Store.now()
         for file in files { for (index,row) in file.rows.enumerated() {
             var core: Record = [:], custom: Record = [:]
@@ -248,20 +237,31 @@ extension Store {
             let name = full.isEmpty ? "\(first) \(last)".trimmingCharacters(in:.whitespacesAndNewlines) : full
             if name.isEmpty { hard.append("\(file.name) row \(index + 2): missing name"); continue }
             core["name"] = name
+            do {
+                let normalized = try AgentIdentity.normalized(core)
+                for (key,value) in normalized { core[key] = value }
+            } catch let error as StoreError {
+                hard.append("\(file.name) row \(index + 2): \(error.message)"); continue
+            }
             let identityKeys = GenericCSV.identityKeys(core)
             guard let identity = identityKeys.first else {
-                hard.append("\(file.name) row \(index + 2): missing Courted profile or MLS identity"); continue
+                hard.append("\(file.name) row \(index + 2): missing scoped license or source identity (Courted is optional)"); continue
             }
             if identityKeys.contains(where:{seen.contains($0)}) {
                 hard.append("\(file.name) row \(index + 2): identity repeats in selected files"); continue
             }
             identityKeys.forEach { seen.insert($0) }
-            let matches = Array(Dictionary(grouping:identityKeys.flatMap{existingByIdentity[$0] ?? []},by:{$0["id"] as? String ?? ""}).values.compactMap{$0.first})
-            if matches.count > 1 { hard.append("\(file.name) row \(index + 2): multiple existing identity matches"); continue }
+            let matches: [Record]
+            do {
+                matches = try AgentIdentity.match(core,among:existing + agents).map { [$0] } ?? []
+                try AgentIdentity.ensureSourceNameCompatible(core,existing:matches.first)
+            }
+            catch let error as StoreError { hard.append("\(file.name) row \(index + 2): \(error.message)"); continue }
             if let match = matches.first, match["datasetId"] as? String == "sample" {
                 hard.append("\(file.name) row \(index + 2): identity collides with sample data"); continue
             }
             let id = matches.first?["id"] as? String ?? "import-" + String(CourtedCSV.hash(Data(identity.utf8)).prefix(32))
+            if !seenAgentIDs.insert(id).inserted { hard.append("\(file.name) row \(index + 2): multiple rows resolve to the same contact"); continue }
             if matches.isEmpty && existing.contains(where:{$0["id"] as? String == id}) {
                 hard.append("\(file.name) row \(index + 2): generated ID already exists"); continue
             }
@@ -272,11 +272,15 @@ extension Store {
                 "history":[],"transactions":[],"signals":[]]
             if matches.isEmpty, let sourceStatus = core["sourceStatus"] as? String,
                stages.contains(sourceStatus) { agent["status"] = sourceStatus }
+            do {
+                let identityFields = try AgentIdentity.normalized(core,existing:matches.first)
+                for (key,value) in identityFields { core[key] = value }
+            } catch let error as StoreError { hard.append("\(file.name) row \(index + 2): \(error.message)"); continue }
             let prior = agent["importedCoreValues"] as? Record ?? [:]
             let localOverrides = Set(agent["localOverrides"] as? [String] ?? [])
             var managed: Record = prior
             for (key,value) in core {
-                if key == "firstName" || key == "lastName" || key == "courtedProfileURL" || key == "mls" || key == "mlsId" { agent[key] = value; managed[key] = value; continue }
+                if key == "firstName" || key == "lastName" || AgentIdentity.fields.contains(key) { agent[key] = value; managed[key] = value; continue }
                 if key == "move", let move = value as? String { let norm = move.capitalized; coreValue(&agent,key:key,value:norm,prior:prior,managed:&managed,localOverrides:localOverrides); continue }
                 if GenericCSV.sourceOnly.contains(key) { agent[key] = value; managed[key] = value; continue }
                 coreValue(&agent,key:key,value:value,prior:prior,managed:&managed,localOverrides:localOverrides)
@@ -359,7 +363,18 @@ extension Store {
                 throw StoreError(message:"The workspace changed during backup. Review the import again.")
             }
             for field in plan.customFields { try put("customFields",field) }
-            for agent in plan.agents { try put("agents",agent) }
+            let existingIDs = Set(try all("agents").compactMap { $0["id"] as? String })
+            for var agent in plan.agents {
+                let id = agent["id"] as! String, isNew = !existingIDs.contains(id)
+                // The commit time is a local import event, never the source's creation date.
+                if isNew { agent["createdAt"] = importedAt; agent["importedAt"] = importedAt }
+                agent["lastImportedAt"] = importedAt
+                try put("agents", agent)
+                try recordContactEvent(agentId: id, type: isNew ? "contact.imported" : "contact.import_updated",
+                    source: "CSV import", sourceRecordId: GenericCSV.identityKeys(agent).first ?? id,
+                    batchId: batchId, fileNames: [agent["sourceFileName"] as? String ?? ""],
+                    occurredAt: importedAt, recordedAt: importedAt, dedupeKey: "import:" + batchId)
+            }
             try put("importBatches",["id":batchId,"source":"CSV import","fileNames":plan.files.map{$0.name},
                 "fileDigest":plan.digest,"rows":plan.agents.count,"newAgents":plan.newCount,
                 "updateAgents":plan.updateCount,"createdCustomFieldIds":plan.customFields.compactMap{$0["id"] as? String},

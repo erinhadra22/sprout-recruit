@@ -1,5 +1,7 @@
 import Foundation
 import SQLite3
+import AppKit
+import CryptoKit
 
 typealias Record = [String: Any]
 struct StoreError: LocalizedError {
@@ -11,7 +13,7 @@ final class Store {
     private var db: OpaquePointer?
     let path: String
     let stages = ["Identified", "Called", "Contacted", "Connected", "Meeting scheduled", "Meeting held", "Negotiating", "Contract out", "Recruited", "Lost", "Not interested", "Not qualified", "Do not contact"]
-    let kinds = ["agents", "tasks", "activities", "watchlists", "searches", "drafts", "alerts", "settings", "communications", "externalMessages", "contextSuggestions", "performance", "reports", "workflows", "workflowEvents", "sequences", "aiJobs", "candidateFeedback", "importBatches", "customFields"]
+    let kinds = ["agents", "tasks", "deletedTasks", "activities", "watchlists", "searches", "drafts", "alerts", "settings", "communications", "externalMessages", "contextSuggestions", "performance", "reports", "workflows", "workflowEvents", "sequences", "aiJobs", "candidateFeedback", "importBatches", "customFields", "agentPhotos", "outboxJobs", "outboxEvents", "professionalProfiles", "teams", "teamMemberships", "serviceAreas", "sourceMappings", "discoveryProspects", "prospectingEvidence", "meetings"]
     static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
     static func now() -> String { ISO8601DateFormatter().string(from: Date()) }
     static func day(_ date: Date = Date()) -> String {
@@ -241,19 +243,37 @@ final class Store {
     private func saveTask(_ p: Record) throws -> Record {
         let title = try required(p,"title",max:200), due = try required(p,"dueDate",max:10)
         guard Store.parseDay(due) != nil else { throw StoreError(message: "Choose a valid due date.") }
-        let aid = try agentID(p)
+        let aid: String? = (p["agentId"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        if let aid { _ = try get("agents",aid) }
         let interval = p["repeatDays"] as? Int ?? 0
         guard [0,1,7,14,30].contains(interval) else { throw StoreError(message: "Choose a supported recurrence.") }
         let type = p["type"] as? String ?? "Check-in", priority = p["priority"] as? String ?? "None"
-        guard ["Check-in","Call","Email","Message","Meeting","To-do"].contains(type), ["None","Low","Medium","High"].contains(priority) else { throw StoreError(message: "Invalid task type or priority.") }
-        let task: Record = ["id":UUID().uuidString,"agentId":aid,"title":title,"dueDate":due,"type":type,"priority":priority,"description":p["description"] as? String ?? "","assignee":try (p["assignee"] as? String ?? operatorName()),"repeatDays":interval,"completed":false,"createdAt":Store.now()]
-        try put("tasks",task); try activity(aid,kind:"task",title:"Task created: \(title)",body:"Due \(due)")
+        guard ["Check-in","Call","Email","Message","Meeting","To-do","Review","Approval"].contains(type), ["None","Low","Medium","High"].contains(priority) else { throw StoreError(message: "Invalid task type or priority.") }
+        try validateTaskReviewFields(p)
+        let description = p["description"] as? String ?? ""
+        guard description.count <= 20000 else { throw StoreError(message: "Task description is too long.") }
+        var task: Record = ["id":UUID().uuidString,"title":title,"dueDate":due,"type":type,"priority":priority,"description":description,"assignee":try (p["assignee"] as? String ?? operatorName()),"repeatDays":interval,"completed":false,"createdAt":Store.now()]
+        if let aid { task["agentId"] = aid }
+        for key in ["reviewKind","reviewInstructions","sourceRefs","relatedMessageIds","decisionOptions"] where p[key] != nil { task[key] = p[key] }
+        try put("tasks",task)
+        if let aid { try activity(aid,kind:"task",title:"Task created: \(title)",body:"Due \(due)") }
         return task
     }
-    func snapshot() throws -> Record {
+    private func validateTaskReviewFields(_ p: Record) throws {
+        for (key,limit) in [("reviewKind",80),("reviewInstructions",10000)] where p[key] != nil {
+            guard let value = p[key] as? String, value.count <= limit else { throw StoreError(message:"Invalid task \(key).") }
+        }
+        for (key,count,length) in [("sourceRefs",20,500),("relatedMessageIds",50,250),("decisionOptions",10,100)] where p[key] != nil {
+            guard let values = p[key] as? [String], values.count <= count,
+                  values.allSatisfy({ !$0.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty && $0.count <= length }) else {
+                throw StoreError(message:"Invalid task \(key).")
+            }
+        }
+    }
+    func snapshot(includePhotos: Bool = false) throws -> Record {
         let hasLive = try all("agents").contains { $0["datasetId"] as? String == "live" }
         var s: Record = ["mode":hasLive ? "mixed" : "sample","schemaVersion":2,"databasePath":path,"today":Store.day(),"stages":stages]
-        for k in kinds {
+        for k in kinds where k != "agentPhotos" {
             let rows = try all(k)
             s[k] = k == "agents" ? rows.map { agent -> Record in
                 var enriched = agent
@@ -261,6 +281,9 @@ final class Store {
                 return enriched
             } : rows
         }
+        if includePhotos { s["agentPhotos"] = try all("agentPhotos") }
+        s["messagesSync"] = try messagesSyncStatus()
+        s["gmailSync"] = try gmailSyncStatus()
         return s
     }
     func dataVersion() throws -> Int {
@@ -272,26 +295,115 @@ final class Store {
         return Int(sqlite3_column_int64(statement, 0))
     }
     func command(_ action: String, _ p: Record = [:]) throws -> Record {
+        if action == "gmailSync.status" { return try gmailSyncStatus() }
+        if action == "messagesSync.status" { return try messagesSyncStatus() }
+        if action == "outbox.status" { return try outboxStatus() }
+        if action == "outbox.claim" { return try transaction { if let job = try self.claimNextOutbox() { return ["job":job] }; return [:] } }
         if action == "history.audit" { return try historicalAudit(p) }
         if action == "recovery.list" { return try WorkspaceRecovery.list(path) }
         if action == "recovery.create" { return try WorkspaceRecovery.snapshot(path,reason:"manual") }
         if action == "snapshot" { return try snapshot() }
+        if action == "agent.photo.get" {
+            let aid = try agentID(p)
+            let agent = try get("agents",aid)
+            guard agent["photoAvailable"] as? Bool == true else { return ["available":false] }
+            let photo = try get("agentPhotos",aid)
+            guard let mime = photo["mimeType"] as? String,
+                  let encoded = photo["base64"] as? String,
+                  ["image/png","image/jpeg"].contains(mime) else {
+                throw StoreError(message:"The saved contact photo is invalid.")
+            }
+            return ["available":true,"dataUri":"data:\(mime);base64,\(encoded)",
+                    "sha256":photo["sha256"] as? String ?? "",
+                    "sourceProfileUrl":photo["sourceProfileUrl"] as? String ?? "",
+                    "capturedAt":photo["capturedAt"] as? String ?? ""]
+        }
         if action == "workspace.version" { return ["dataVersion": try dataVersion()] }
+        if action == "courtedTasks.preview" { return try previewCourtedTasks(p) }
+        if action == "courtedTasks.commit" { return try commitCourtedTasks(p) }
+        if action == "sourcingRules.get" { return try sourcingRulesRecord() }
+        if ["task.delete","task.restore"].contains(action) {
+            let id = try required(p,"id")
+            _ = try get(action == "task.delete" ? "tasks" : "deletedTasks",id)
+            _ = try consistentBackup(label:action == "task.delete" ? "before-task-delete" : "before-task-restore")
+            return try transaction {
+                if action == "task.delete" {
+                    let task = try self.get("tasks",id)
+                    try self.put("deletedTasks",["id":id,"task":task,"deletedAt":Store.now()])
+                    try self.deleteRecord("tasks",id)
+                } else {
+                    let archive = try self.get("deletedTasks",id)
+                    guard let task = archive["task"] as? Record,try !self.all("tasks").contains(where:{$0["id"] as? String == id}) else { throw StoreError(message:"This task cannot be restored over an existing task.") }
+                    try self.put("tasks",task);try self.deleteRecord("deletedTasks",id)
+                }
+                return try self.snapshot()
+            }
+        }
+        if action == "meetings.held" {
+            _ = try consistentBackup(label:"before-meeting-held")
+            return try transaction { _ = try self.markMeetingHeld(p);return try self.snapshot() }
+        }
+        if action == "meetings.preview" { return try previewMeetingBooking(p) }
+        if action == "report.weeklyContent" { return try Store.weeklyReportEmailContent(managerReport(p.isEmpty ? Store.weeklyReportWindow(timeZone:weeklyReportDeliveryPlan()["timeZone"] as? String ?? "America/Chicago") : p),plan:weeklyReportDeliveryPlan()) }
         if action == "performance.report" { return try managerReport(p) }
+        if action == "prospecting.preview" { return try previewProspecting(p) }
+        if action == "prospecting.workspace" { return try prospectingWorkspace(p) }
+        if action == "planner.daily" { return try dailyActionPlan(p) }
+        if action == "profile.list" { return ["profiles":try professionalProfilesForAgent(agentID(p))] }
         if action == "csv.import.inspect" { return try inspectGenericImport(p) }
         if action == "csv.import.preview" { return try previewGenericImport(p) }
         if action == "csv.import.commit" { return try commitGenericImport(p) }
         if action == "csv.import.reconcile-move" { return try reconcileImportedMove() }
+        if action == "discovery.accept" {
+            let backup = try consistentBackup(label:"before-discovery-import")
+            return try transaction {
+                try self.acceptDiscoveredProspects(p)
+                var result = try self.snapshot()
+                result["discoveryBackupPath"] = backup
+                return result
+            }
+        }
+        if ["sourcingRules.save","meetings.participants.save","report.deliveryPlan.save","report.automation.save","report.delivery.record"].contains(action) {
+            _ = try consistentBackup(label:"before-"+action.replacingOccurrences(of:".",with:"-"))
+        }
         return try transaction {
             switch action {
+            case "sourcingRules.save": try self.saveSourcingRules(p)
+            case "meetings.participants.save": try self.saveMeetingParticipants(p)
+            case "report.delivery.record": try self.recordWeeklyReportDelivery(p)
+            case "report.automation.save": try self.saveWeeklyReportAutomation(p)
+            case "report.deliveryPlan.save": try self.saveWeeklyReportDeliveryPlan(p)
+            case "profile.save": try self.saveProfessionalProfile(p)
+            case "team.save": try self.saveTeam(p)
+            case "teamMembership.save": try self.saveTeamMembership(p)
+            case "serviceArea.save": try self.saveServiceArea(p)
+            case "sourceMapping.save": try self.saveSourceMapping(p)
+            case "discovery.stage": try self.stageProspecting(p)
+            case "prospecting.evidence.save": try self.saveProspectingEvidence(p)
+            case "messagesSync.configure": try self.configureMessagesSync(p)
+            case "messagesSync.apply":
+                guard let request = p["request"] as? Record, let batch = p["batch"] as? Record else { throw StoreError(message:"A native Messages scan receipt is required.") }
+                try self.applyMessagesSyncBatch(request:request,batch:batch)
+            case "messagesSync.failure": try self.recordMessagesSyncFailure(p)
+            case "outbox.enqueue": try self.enqueueOutbox(p)
+            case "outbox.cancel": try self.cancelOutbox(p)
+            case "outbox.resume": try self.resumeOutbox(p)
+            case "outbox.confirm": try self.confirmOutbox(p)
+            case "outbox.validateClaim": try self.revalidateOutboxClaim(p)
+            case "outbox.finish": try self.finishOutbox(p)
+            case "outbox.recover": try self.recoverOutbox()
+            case "outbox.connection": try self.setOutboxConnection(p)
+            case "outbox.ack": try self.acknowledgeOutboxEvents(p)
             case "onboarding.save": try self.saveOnboarding(p)
             case "sample.purge":
                 try self.purgeSampleContacts()
             case "agent.create":
                 let name = try required(p,"name",max:120)
                 let linkedIn = try Store.linkedInProfileURL(p["linkedinUrl"] as? String ?? "")
-                let r: Record = ["id":UUID().uuidString,"name":name,"office":p["office"] as? String ?? "Independent","city":p["city"] as? String ?? "","email":p["email"] as? String ?? "","phone":p["phone"] as? String ?? "","linkedinUrl":linkedIn,"source":"Manual contact","datasetId":"live","manual":true,"status":"Identified","assignee":try operatorName(),"liked":false,"disposition":"","createdAt":Store.now(),"history":[],"transactions":[],"signals":[],"move":"Unknown"]
-                try self.put("agents",r); try self.activity(r["id"] as! String,kind:"system",title:"Contact added locally")
+                let identity = try self.prepareAgentIntake(p)
+                var r: Record = ["id":UUID().uuidString,"name":name,"office":p["office"] as? String ?? "Independent","city":p["city"] as? String ?? "","email":p["email"] as? String ?? "","phone":p["phone"] as? String ?? "","linkedinUrl":linkedIn,"source":"Manual contact","datasetId":"live","manual":true,"status":"Identified","assignee":try operatorName(),"liked":false,"disposition":"","createdAt":Store.now(),"history":[],"transactions":[],"signals":[],"move":"Unknown"]
+                for (key,value) in identity { r[key] = value }
+                try self.put("agents",r); try self.recordContactEvent(agentId:r["id"] as! String,type:"contact.created",source:"Manual contact",occurredAt:r["createdAt"] as? String,dedupeKey:"contact-created:"+(r["id"] as! String))
             case "agent.verifyCommunication":
                 let requestedKeys = Set(p.keys)
                 guard requestedKeys == Set(["agentId","name","phone","confirmed"])
@@ -337,14 +449,18 @@ final class Store {
                 r["communicationVerification"] = verification
                 try self.put("agents",r)
                 let now = Store.now()
-                try self.put("activities",["id":UUID().uuidString,"agentId":aid,"kind":"system",
-                    "title":"Contact and phone reviewed for communication",
-                    "body":evidence == nil ? "Reviewed the saved contact name, source, and phone. No message or call was made."
-                        : "Codex matched the imported name, phone, Courted profile ID, and license to the first-contact source record. No message or call was made.",
-                    "date":now,"createdAt":now,"author":evidence == nil ? (try operatorName()) : "Codex","pinned":false])
+                try self.recordContactEvent(agentId:aid,type:"contact.reviewed",source:source,
+                    sourceRecordId:r["courtedId"] as? String ?? "",occurredAt:now,
+                    dedupeKey:"contact-reviewed:"+now+":"+phone,
+                    details:evidence == nil ? "Reviewed the saved contact name, source, and phone. No message or call was made." : "Codex matched the imported name, phone, Courted profile ID, and license to the first-contact source record. No message or call was made.")
             case "agent.update":
                 let aid = try self.agentID(p); var r = try self.get("agents",aid)
                 var overrides = Set(r["localOverrides"] as? [String] ?? [])
+                let identity = try self.prepareAgentIntake(p,existing:r)
+                for (key,value) in identity {
+                    if p[key] != nil { overrides.insert(key) }
+                    r[key] = value
+                }
                 if let status = p["status"] as? String, status != r["status"] as? String {
                     guard self.stages.contains(status) || status.isEmpty else { throw StoreError(message:"Choose a valid status.") }
                     r["status"] = status; r["statusAt"] = Store.now(); try self.activity(aid,kind:"status",title:status.isEmpty ? "Status cleared" : "Status changed to \(status)")
@@ -369,6 +485,49 @@ final class Store {
                 if let liked = p["liked"] as? Bool { r["liked"] = liked }
                 if !overrides.isEmpty { r["localOverrides"] = overrides.sorted() }
                 try self.put("agents",r)
+            case "agent.photo.import":
+                let aid = try self.agentID(p)
+                var agent = try self.get("agents",aid)
+                let profileURL = try Store.linkedInProfileURL(try self.required(p,"sourceProfileUrl",max:500))
+                guard !profileURL.isEmpty, profileURL == agent["linkedinUrl"] as? String else {
+                    throw StoreError(message:"The photo's LinkedIn profile does not match this contact.")
+                }
+                let mime = try self.required(p,"mimeType",max:30)
+                guard ["image/png","image/jpeg"].contains(mime),
+                      let encoded = p["base64"] as? String,
+                      encoded.count <= 2_800_000,
+                      let image = Data(base64Encoded:encoded), image.count <= 2_000_000,
+                      NSImage(data:image) != nil else {
+                    throw StoreError(message:"Choose a valid PNG or JPEG photo under 2 MB.")
+                }
+                let png = image.starts(with:[0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a])
+                let jpeg = image.starts(with:[0xff,0xd8,0xff])
+                guard (mime == "image/png" && png) || (mime == "image/jpeg" && jpeg) else {
+                    throw StoreError(message:"The image format does not match its content type.")
+                }
+                let sourceActor = try self.required(p,"sourceActor",max:200)
+                let sourceRunId = try self.required(p,"sourceRunId",max:100)
+                let sourceURL = try self.required(p,"sourceUrl",max:1000)
+                guard let url = URLComponents(string:sourceURL), url.scheme?.lowercased() == "https",
+                      let host = url.host?.lowercased(), host == "media.licdn.com" || host.hasSuffix(".licdn.com"),
+                      url.user == nil, url.password == nil else {
+                    throw StoreError(message:"Use the verified LinkedIn image URL from the export.")
+                }
+                let digest = SHA256.hash(data:image).map { String(format:"%02x",$0) }.joined()
+                if agent["photoSHA256"] as? String == digest { break }
+                guard agent["photoAvailable"] as? Bool != true || p["replace"] as? Bool == true else {
+                    throw StoreError(message:"This contact already has a photo. Review replacement explicitly.")
+                }
+                let now = Store.now()
+                try self.put("agentPhotos",["id":aid,"agentId":aid,"mimeType":mime,"base64":encoded,
+                    "sha256":digest,"sourceProfileUrl":profileURL,"sourceUrl":sourceURL,
+                    "sourceActor":sourceActor,"sourceRunId":sourceRunId,"capturedAt":now])
+                agent["photoAvailable"] = true
+                agent["photoSHA256"] = digest
+                agent["photoImportedAt"] = now
+                try self.put("agents",agent)
+                try self.activity(aid,kind:"system",title:"Profile photo imported from LinkedIn export",
+                    body:"Source: \(profileURL). Apify run: \(sourceRunId). No contact status or outreach changed.")
             case "candidate.reject":
                 let aid = try self.agentID(p)
                 var agent = try self.get("agents",aid)
@@ -421,16 +580,17 @@ final class Store {
                 var t = try self.get("tasks",self.required(p,"id"))
                 guard t["completed"] as? Bool != true else { throw StoreError(message:"Reopen the task before editing it.") }
                 let keys = Set(p.keys).subtracting(["id"])
-                let allowed: Set<String> = t["draftId"] == nil ? ["title","dueDate","type","priority","description","repeatDays"] : ["dueDate","priority"]
+                let allowed: Set<String> = t["draftId"] == nil ? ["title","dueDate","type","priority","description","repeatDays","reviewKind","reviewInstructions","sourceRefs","relatedMessageIds","decisionOptions"] : ["dueDate","priority"]
                 guard keys.isSubset(of:allowed) else { throw StoreError(message:"Linked draft wording must be edited in its draft.") }
                 for key in ["title","dueDate","type","priority","description"] where p[key] != nil {
                     guard p[key] is String else { throw StoreError(message:"Task fields must contain text.") }
                 }
                 if let due=p["dueDate"] as? String { guard Store.parseDay(due) != nil else { throw StoreError(message:"Choose a valid due date.") } }
-                if let type=p["type"] as? String { guard ["Check-in","Call","Email","Message","Meeting","To-do"].contains(type) else { throw StoreError(message:"Invalid task type.") } }
+                if let type=p["type"] as? String { guard ["Check-in","Call","Email","Message","Meeting","To-do","Review","Approval"].contains(type) else { throw StoreError(message:"Invalid task type.") } }
                 if let priority=p["priority"] as? String { guard ["None","Low","Medium","High"].contains(priority) else { throw StoreError(message:"Invalid priority.") } }
                 if p["title"] != nil { _ = try self.required(p,"title",max:200) }
                 if let description=p["description"] as? String { guard description.count<=20000 else { throw StoreError(message:"Task description is too long.") } }
+                try self.validateTaskReviewFields(p)
                 if let value=p["repeatDays"] {
                     guard let n=value as? Int, CFGetTypeID(value as CFTypeRef) != CFBooleanGetTypeID(), [0,1,7,14,30].contains(n) else { throw StoreError(message:"Choose a supported repeat interval.") }
                 }
@@ -440,16 +600,15 @@ final class Store {
                 var t = try self.get("tasks",self.required(p,"id"))
                 if t["completed"] as? Bool == true {
                     t["completed"]=false; t.removeValue(forKey:"completedAt");t["reopenedAt"]=Store.now();try self.put("tasks",t)
-                    try self.activity(t["agentId"] as! String,kind:"task",title:"Task reopened: \(t["title"] as? String ?? "Follow-up")")
+                    if let aid = t["agentId"] as? String { try self.activity(aid,kind:"task",title:"Task reopened: \(t["title"] as? String ?? "Follow-up")") }
                 }
             case "task.complete":
                 var t = try self.get("tasks",self.required(p,"id"))
                 if t["completed"] as? Bool != true {
                     t["completed"] = true; t["completedAt"] = Store.now(); try self.put("tasks",t)
-                    let aid = t["agentId"] as! String
-                    try self.activity(aid,kind:"task",title:"Task completed: \(t["title"] as? String ?? "Follow-up")")
+                    if let aid = t["agentId"] as? String { try self.activity(aid,kind:"task",title:"Task completed: \(t["title"] as? String ?? "Follow-up")") }
                     let interval = t["repeatDays"] as? Int ?? 0
-                    if try interval > 0 && !self.all("tasks").contains(where: { $0["recurrenceSourceId"] as? String == t["id"] as? String }) {
+                    if try interval > 0 && !["paused_reply","paused_identity"].contains(t["followUpState"] as? String ?? "") && !self.all("tasks").contains(where: { $0["recurrenceSourceId"] as? String == t["id"] as? String }) {
                         let oldDue = Store.parseDay(t["dueDate"] as? String ?? "") ?? Date()
                         t["dueDate"] = Store.plusDays(interval,from:max(oldDue,Date()))
                         var next = try self.saveTask(t); next["recurrenceSourceId"] = t["id"]; try self.put("tasks",next)
@@ -482,6 +641,15 @@ final class Store {
             case "context.save": try self.saveAIContext(p)
             case "communication.prepare": try self.prepareCommunication(p)
             case "communication.update": try self.updateCommunication(p)
+            case "gmailSync.clientConfiguration": try self.saveGmailClientConfiguration(p)
+            case "gmailSync.connection": try self.setGmailSyncConnection(p)
+            case "gmailSync.reclassifyMeetingResponse": try self.reclassifyGmailMeetingResponse(p)
+            case "gmailSync.rescan": try self.resetGmailSyncCursor(p)
+            case "gmailSync.configure": try self.configureGmailSync(p)
+            case "gmailSync.apply":
+                guard let request = p["request"] as? Record, let batch = p["batch"] as? Record else { throw StoreError(message:"Invalid Gmail native sync batch.") }
+                try self.applyGmailSyncBatch(request:request,batch:batch)
+            case "gmailSync.failure": try self.recordGmailSyncFailure(p)
             case "externalMessage.import": try self.importExternalMessage(p)
             case "preferences.save", "settings.save":
                 let key = action == "preferences.save" ? "preferences" : "workspace"
@@ -497,11 +665,15 @@ final class Store {
                 }
                 try self.put("settings",r)
             case "draft.save":
-                let aid = try self.agentID(p), body = try self.required(p,"body")
+                let aid = try self.agentID(p)
+                guard let body = p["body"] as? String, !body.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty, body.count <= 10000 else { throw StoreError(message:"Enter a message of up to 10,000 characters.") }
                 let channel = p["channel"] as? String ?? "Message"
                 guard ["Message","Email","Phone call"].contains(channel) else { throw StoreError(message:"Invalid draft channel.") }
                 let id = p["id"] as? String ?? UUID().uuidString
                 let oldDraft = try self.all("drafts").first { $0["id"] as? String == id }
+                if let expected = p["expectedUpdatedAt"] as? String, expected != oldDraft?["updatedAt"] as? String { throw StoreError(message:"This draft changed elsewhere. Reload it before saving your changes.") }
+                if let expected = p["expectedBody"] as? String, expected != oldDraft?["body"] as? String { throw StoreError(message:"This draft changed elsewhere. Reload it before saving your changes.") }
+                if try self.all("outboxJobs").contains(where: { $0["draftId"] as? String == id && ["queued","sending","submitted","unknown","user_confirmed_sent"].contains($0["state"] as? String ?? "") }) { throw StoreError(message:"Cancel the queued text, or confirm its outcome, before editing this draft.") }
                 if let prior = oldDraft, prior["agentId"] as? String != aid { throw StoreError(message:"A draft cannot be moved to a different contact.") }
                 if oldDraft?["state"] as? String == "sent" { throw StoreError(message:"This message was already sent. Create a new draft for another message.") }
                 var draft = oldDraft ?? [:]

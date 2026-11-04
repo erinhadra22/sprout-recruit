@@ -49,13 +49,32 @@ enum WorkspaceRecovery {
         try fm.createDirectory(at:url,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
     }
     static func openDB(_ path: String, write: Bool = false) throws -> OpaquePointer {
+        if !write { try regular(URL(fileURLWithPath:path)) }
         var db: OpaquePointer?
-        let flags = write ? SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE : SQLITE_OPEN_READONLY
-        guard sqlite3_open_v2(path,&db,flags,nil) == SQLITE_OK, let result = db else {
+        // A quiescent WAL database may legitimately have no -wal/-shm files.
+        // SQLite's read-only open can then fail on the first database read even
+        // though its main file is valid. Allow SQLite to initialize its ordinary
+        // sidecars, without CREATE or any SQL record writes. This also reads live
+        // WAL commits during backup; immutable mode would incorrectly ignore them.
+        let flags = write ? SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE : SQLITE_OPEN_READWRITE
+        var opened=sqlite3_open_v2(path,&db,flags,nil)
+        if opened != SQLITE_OK && !write {
+            if db != nil { sqlite3_close(db); db=nil }
+            // Truly read-only snapshot files remain valid validation sources.
+            opened=sqlite3_open_v2(path,&db,SQLITE_OPEN_READONLY,nil)
+        }
+        guard opened == SQLITE_OK, let result = db else {
             if db != nil { sqlite3_close(db) }
             throw StoreError(message:"Recovery could not open the database.")
         }
-        sqlite3_busy_timeout(result,5000); return result
+        sqlite3_busy_timeout(result,5000)
+        if !write {
+            do {
+                guard sqlite3_exec(result,"PRAGMA query_only=ON",nil,nil,nil)==SQLITE_OK,
+                      try scalar(result,"PRAGMA query_only")=="1" else { throw StoreError(message:"Recovery could not enable query-only validation.") }
+            } catch { sqlite3_close(result); throw error }
+        }
+        return result
     }
     static func scalar(_ db: OpaquePointer, _ sql: String) throws -> String {
         var stmt: OpaquePointer?; defer { sqlite3_finalize(stmt) }

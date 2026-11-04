@@ -8,6 +8,7 @@ const Model=require('../Web/model.js');
 function context(workspace={}){
  const source=fs.readFileSync(path.join(__dirname,'../Web/app.js'),'utf8');
  const c=vm.createContext({Model,Intl,icon:()=>'',CommunicationsUI:{render:()=>'<p>Apple handoff</p>'},document:{getElementById(){return {};}},window:{}});
+ for(const file of ['task-controls.js','weekly-reports.js','sourcing-rules.js','meetings.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,'../Web',file),'utf8'),c);
  vm.runInContext(source.slice(0,source.indexOf("document.addEventListener('click'"))+`;D={settings:[{id:'workspace',...${JSON.stringify(workspace)}}],databasePath:'/fixture/workspace.sqlite'};globalThis.ui={needsOnboarding,renderOnboarding,renderSettings,renderRecovery,shell,setTab:x=>S.settingsTab=x,setRecovery:x=>recoveryState=x};`,c);
  return c;
 }
@@ -28,7 +29,7 @@ test('existing identity remains usable and all settings text is escaped',()=>{
 test('experimental settings route cannot render provider or AI connection controls',()=>{
  const c=context({name:'Fixture'});c.ui.setTab('AI connection');
  const html=c.ui.renderSettings();
- assert.match(html,/Account connections: next phase/);
+ assert.match(html,/Other account connections/);
  assert.doesNotMatch(html,/ai-job-form|comm-configure|telnyxMessage/);
 });
 test('recovery screen discloses replacement, restart, retention and device-loss limits',()=>{

@@ -102,28 +102,34 @@ extension Store {
                                      "schemaVersion": 1])
         if direction == "inbound" {
             try pauseSequencesForImportedReply(agentId:agentId,occurredAt:occurredAt,messageId:id)
+            try holdOutboxForImportedReply(agentId:agentId,occurredAt:occurredAt,messageId:id)
         }
     }
 
     // Historical correspondence predating enrollment must not pause a newer
     // sequence. The message and its pause effects share the import transaction.
-    private func pauseSequencesForImportedReply(agentId: String, occurredAt: String, messageId: String) throws {
-        guard let replyDate = ISO8601DateFormatter().date(from:occurredAt) else { return }
+    func pauseSequencesForImportedReply(agentId: String, occurredAt: String, messageId: String) throws {
+        guard let replyDate = Store.activityEventDate(occurredAt) else { return }
         var affected = Set<String>()
         let now = Store.now()
-        for var sequence in try all("sequences") where sequence["agentId"] as? String == agentId && sequence["state"] as? String == "active" {
+        let drafts = try all("drafts").filter { $0["agentId"] as? String == agentId && $0["state"] as? String == "draft" && $0["approvalState"] as? String != "rejected" }
+        let outstanding = Set(drafts.compactMap { $0["sequenceId"] as? String })
+        for var sequence in try all("sequences") where sequence["agentId"] as? String == agentId {
             guard let id = sequence["id"] as? String,
+                  sequence["state"] as? String == "active" || (sequence["state"] as? String == "completed" && outstanding.contains(id)),
                   let created = sequence["createdAt"] as? String,
-                  let enrolledAt = ISO8601DateFormatter().date(from:created),
+                  let enrolledAt = Store.activityEventDate(created),
                   replyDate >= enrolledAt else { continue }
-            sequence["state"] = "paused"; sequence["pauseReason"] = "inbound_reply"
+            // "Completed" means all steps were prepared, not that the final
+            // message was sent. Preserve that fact while holding its output.
+            if sequence["state"] as? String == "active" { sequence["state"] = "paused" }
+            sequence["pendingOutputState"] = "paused_reply"; sequence["pauseReason"] = "inbound_reply"
             sequence["replyMessageId"] = messageId; sequence["updatedAt"] = now
             try put("sequences",sequence); affected.insert(id)
         }
         guard !affected.isEmpty else { return }
-        for var draft in try all("drafts") where draft["agentId"] as? String == agentId && draft["state"] as? String == "draft" {
-            guard let sequenceId = draft["sequenceId"] as? String, affected.contains(sequenceId),
-                  draft["approvalState"] as? String != "rejected" else { continue }
+        for var draft in drafts {
+            guard let sequenceId = draft["sequenceId"] as? String, affected.contains(sequenceId) else { continue }
             draft["approvalState"] = "paused_reply"; draft["updatedAt"] = now
             draft["replyMessageId"] = messageId
             try put("drafts",draft)
