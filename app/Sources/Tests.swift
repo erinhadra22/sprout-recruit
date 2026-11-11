@@ -14,6 +14,7 @@ func runTests() throws {
     try runCalendarAuthorizationTests()
     try runGoogleCalendarClientTests()
     try runCalendarConnectionTests()
+    try runCalendarBookingCredentialTests()
     try runMeetingsTests()
     try runMeetingProposalsTests()
     try runGmailSyncTests()

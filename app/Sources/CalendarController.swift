@@ -8,10 +8,10 @@ final class CalendarController {
     private let client: GoogleCalendarClient
     private var busy = false
     var storeAvailable: () -> Bool = { true }
-    init(store:Store, oauth: GmailOAuth? = nil) {
+    init(store:Store, oauth: GmailOAuth? = nil, client: GoogleCalendarClient = GoogleCalendarClient()) {
         self.store=store
         self.oauth=oauth ?? GmailOAuth(workspacePath:store.path,scopes:GoogleCalendarClient.scopes,keychainService:"com.sprout-recruit.calendar.oauth")
-        client=GoogleCalendarClient()
+        self.client=client
     }
     func status() throws -> Record {
         var result=try oauth.status()
@@ -48,35 +48,63 @@ final class CalendarController {
                 return
             }
             guard ["meetings.book","meetings.reconcile","meetings.refresh"].contains(action) else {throw StoreError(message:"Unsupported Calendar action.")}
-            let connection=try oauth.status()
-            guard connection["connected"] as? Bool==true else {throw StoreError(message:"Connect Google Calendar in Settings → Meetings before working with a calendar event. No event was submitted.")}
-            let meeting:Record
-            if action != "meetings.book" {
-                guard Set(payload.keys)==["id"],let id=payload["id"] as? String else {throw StoreError(message:"Select the saved booking to check.")}
-                meeting=try store.get("meetings",id)
-            } else {meeting=try store.prepareMeetingBooking(payload)}
-            if action=="meetings.refresh" || (action=="meetings.reconcile" && meeting["state"] as? String=="booked") {
-                try refresh(meeting,account:connection["accountAddress"] as? String ?? "",reply)
-                return
-            }
-            if meeting["state"] as? String=="booked" {reply(try store.snapshot(),nil);return}
-            guard let id=meeting["id"] as? String,let event=meeting["googleEvent"] as? Record else {throw StoreError(message:"This saved booking has no frozen Calendar request.")}
-            let allowInsert=action=="meetings.book" && meeting["state"] as? String=="prepared"
             busy=true
-            oauth.accessToken { tokenResult in
-                do {
-                    let token=try tokenResult.get()
-                    if allowInsert {_ = try self.store.markMeetingSubmitted(id)}
-                    self.client.ensureEvent(event:event,token:token,allowInsert:allowInsert) { result in
-                        self.busy=false
-                        do {
-                            _ = try self.store.applyMeetingBookingResult(["id":id,"event":try result.get(),"calendarAccountAddress":connection["accountAddress"] as? String ?? ""])
-                            reply(try self.store.snapshot(),nil)
-                        } catch {reply(nil,error.localizedDescription+" Check this saved booking before creating another invitation.")}
-                    }
-                } catch {self.busy=false;reply(nil,error.localizedDescription)}
+            waitForConnection(deadline:.now() + 10) { result in
+                self.busy=false
+                do { try self.operateMeeting(action,payload,connection:try result.get(),reply) }
+                catch { reply(nil,error.localizedDescription) }
             }
         } catch {reply(nil,error.localizedDescription)}
+    }
+    private func operateMeeting(_ action:String,_ payload:Record,connection:Record,_ reply:@escaping(Any?,String?)->Void) throws {
+        guard connection["connected"] as? Bool==true else {throw StoreError(message:"Connect Google Calendar in Settings → Meetings before working with a calendar event. No event was submitted.")}
+        let meeting:Record
+        if action != "meetings.book" {
+            guard Set(payload.keys)==["id"],let id=payload["id"] as? String else {throw StoreError(message:"Select the saved booking to check.")}
+            meeting=try store.get("meetings",id)
+        } else {meeting=try store.prepareMeetingBooking(payload)}
+        if action=="meetings.refresh" || (action=="meetings.reconcile" && meeting["state"] as? String=="booked") {
+            try refresh(meeting,account:connection["accountAddress"] as? String ?? "",reply)
+            return
+        }
+        if meeting["state"] as? String=="booked" {reply(try store.snapshot(),nil);return}
+        guard let id=meeting["id"] as? String,let event=meeting["googleEvent"] as? Record else {throw StoreError(message:"This saved booking has no frozen Calendar request.")}
+        let allowInsert=action=="meetings.book" && meeting["state"] as? String=="prepared"
+        busy=true
+        waitForToken(deadline:.now() + 10) { tokenResult in
+            do {
+                let token=try tokenResult.get()
+                if allowInsert {_ = try self.store.markMeetingSubmitted(id)}
+                self.client.ensureEvent(event:event,token:token,allowInsert:allowInsert) { result in
+                    self.busy=false
+                    do {
+                        _ = try self.store.applyMeetingBookingResult(["id":id,"event":try result.get(),"calendarAccountAddress":connection["accountAddress"] as? String ?? ""])
+                        reply(try self.store.snapshot(),nil)
+                    } catch {reply(nil,error.localizedDescription+" Check this saved booking before creating another invitation.")}
+                }
+            } catch {self.busy=false;reply(nil,error.localizedDescription)}
+        }
+    }
+    // Waiting here precedes Calendar transport. A cold secure-store read can
+    // resume the same reviewed operation without another invitation attempt.
+    private func waitForConnection(deadline:DispatchTime,completion:@escaping(Result<Record,Error>)->Void) {
+        do { completion(.success(try oauth.status())) }
+        catch {
+            if (error as? GmailAPIError)?.code=="keychain_read_pending",DispatchTime.now()<deadline {
+                DispatchQueue.main.asyncAfter(deadline:.now() + 0.2) {
+                    self.waitForConnection(deadline:deadline,completion:completion)
+                }
+            } else { completion(.failure(error)) }
+        }
+    }
+    private func waitForToken(deadline:DispatchTime,completion:@escaping(Result<String,Error>)->Void) {
+        oauth.accessToken { result in
+            if case .failure(let error)=result,(error as? GmailAPIError)?.code=="keychain_read_pending",DispatchTime.now()<deadline {
+                DispatchQueue.main.asyncAfter(deadline:.now() + 0.2) {
+                    self.waitForToken(deadline:deadline,completion:completion)
+                }
+            } else { completion(result) }
+        }
     }
     private func connect(clientID:String,deadline:DispatchTime,reply:@escaping(Any?,String?)->Void) {
         oauth.connect(clientID:clientID) { result in
@@ -123,7 +151,7 @@ final class CalendarController {
             throw StoreError(message:"Reconnect the Google account that created this booking before refreshing it.")
         }
         busy=true
-        oauth.accessToken { result in
+        waitForToken(deadline:.now() + 10) { result in
             do {
                 self.client.readBookedEvent(id:eventID,token:try result.get()) { event in
                     self.busy=false

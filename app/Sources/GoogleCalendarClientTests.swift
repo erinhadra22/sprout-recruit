@@ -176,3 +176,53 @@ func runCalendarConnectionTests() throws {
     try check(NSDictionary(dictionary:gmailBefore).isEqual(to:gmailAfter),"Calendar leaves Gmail history sync state intact")
     print("Calendar cold connection tests passed")
 }
+
+func runCalendarBookingCredentialTests() throws {
+    let directory=FileManager.default.temporaryDirectory.appendingPathComponent("sprout-calendar-booking-credentials-"+UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at:directory) }
+    let store=try Store(path:directory.appendingPathComponent("workspace/SproutRecruit.sqlite").path)
+    _ = try store.command("onboarding.save",["name":"Fixture","company":"Sprout","timezone":"UTC"])
+    try store.put("agents",["id":"credential-agent","name":"Fixture Agent","email":"agent@example.com","status":"Connected"])
+    let formatter=DateFormatter();formatter.locale=Locale(identifier:"en_US_POSIX");formatter.timeZone=TimeZone(identifier:"UTC");formatter.dateFormat="yyyy-MM-dd'T'HH:mm"
+    var payload:Record=["id":UUID().uuidString.lowercased(),"agentId":"credential-agent","expectedAgentEmail":"agent@example.com",
+        "expectedParticipantsRevision":0,"internalParticipants":[String](),"localDateTime":formatter.string(from:Date().addingTimeInterval(86400)),
+        "timeZone":"UTC","durationMinutes":60]
+    payload["previewToken"]=try store.previewMeetingBooking(payload)["previewToken"]
+    let saved:Record=["accountAddress":"recruiter@example.com","clientID":"123-fixture.apps.googleusercontent.com",
+        "refreshToken":"fixture-refresh","accessToken":"fixture-access","expiresAt":Date().timeIntervalSince1970+3600,
+        "scopes":GoogleCalendarClient.scopes.sorted()]
+    var loads=0,requests=[String]()
+    let pending=GmailAPIError(code:"keychain_read_pending",message:"Fixture warming credentials")
+    let oauth=GmailOAuth(client:GmailAPIClient(),load:{
+        loads += 1
+        if loads==1 || loads==3 { throw pending }
+        return saved
+    },save:{ _ in },run:{ _,done in done(.failure(StoreError(message:"Unexpected token HTTP"))) },scopes:GoogleCalendarClient.scopes)
+    let client=GoogleCalendarClient { request,done in
+        requests.append(request.httpMethod ?? "")
+        if requests.count==1 {
+            done(.failure(GmailAPIError(code:"not_found",message:"Fixture absence")))
+            return
+        }
+        do {
+            let meeting=try store.get("meetings",payload["id"] as! String)
+            var event=meeting["googleEvent"] as! Record
+            event["status"]="confirmed";event["iCalUID"]="credential-fixture@google.com"
+            done(.success(try JSONSerialization.data(withJSONObject:event)))
+        } catch { done(.failure(error)) }
+    }
+    let calendar=CalendarController(store:store,oauth:oauth,client:client)
+    var finished=false,failure:String?
+    calendar.handle("meetings.book",payload) { _,error in finished=true;failure=error }
+    guard !finished && requests.isEmpty else { throw StoreError(message:"Cold credentials reached Calendar transport early.") }
+    var duplicateRejected=false
+    calendar.handle("meetings.book",payload) { _,error in duplicateRejected=error?.contains("in progress")==true }
+    guard duplicateRejected else { throw StoreError(message:"Cold booking allowed a duplicate operation.") }
+    let deadline=Date().addingTimeInterval(3)
+    while !finished && Date()<deadline { RunLoop.main.run(until:Date().addingTimeInterval(0.03)) }
+    guard finished,failure==nil,loads==4,requests==["GET","POST","GET"],
+          try store.get("agents","credential-agent")["status"] as? String=="Meeting scheduled" else {
+        throw StoreError(message:"The same reviewed booking did not resume once through both cold credential checks.")
+    }
+    print("PASS: cold Calendar status and token reads resume one reviewed booking with one POST and exact saved status.")
+}
