@@ -209,7 +209,11 @@ extension Store {
         let provider=try Store.prospectText(source,"providerId",required:true,max:100),label=try Store.prospectText(source,"label",required:true,max:150),reference=try Store.prospectText(source,"reference",required:true,max:2000),checked=try Store.prospectDay(source,"checkedAt")
         let kind=try Store.prospectText(source,"kind",required:true)
         guard ["fixture","public_roster","authorized_export"].contains(kind) else{throw StoreError(message:"Choose fixture, public_roster or authorized_export. This app does not establish feed access.")}
-        let provenance:Record=["providerId":provider,"label":label,"reference":reference,"kind":kind,"checkedAt":checked,"connectionStatus":"unconnected"]
+        var provenance:Record=["providerId":provider,"label":label,"reference":reference,"kind":kind,"checkedAt":checked,"connectionStatus":"unconnected"]
+        var acquisition:Record=["source":label,"sourceType":source["sourceType"] ?? "provider_import","sourceReference":reference,"sourcedAt":source["sourcedAt"] ?? checked]
+        guard ["provider_import","ai_agent","email_import"].contains(acquisition["sourceType"] as? String ?? "") else{throw StoreError(message:"Discovery source type must be provider_import, ai_agent or email_import.")}
+        acquisition["sourceActor"]=source["sourceActor"]
+        for (key,value) in try Store.validatedCandidateSource(acquisition,defaultType:"provider_import",now:Store.now()){provenance[key]=value}
         let columns=mapping["fields"] as! [String:String],defaults=mapping["defaults"] as? Record ?? [:],agents=try all("agents")
         var result=[Record](),hard=[String](),seen=Set<String>()
         for(index,row) in rows.enumerated(){
@@ -339,6 +343,10 @@ extension Store {
             }
             let now=Store.now()
             var agent=existing ?? ["id":aid,"name":name,"office":"","city":"","email":"","phone":"","status":"Identified","move":"Unknown","manual":false,"datasetId":"live","source":"Reviewed discovery import","createdAt":now,"importedAt":now,"history":[],"transactions":[],"signals":[],"liked":false,"disposition":""]
+            if existing==nil {
+                let acquisition:Record=["source":source["source"] ?? source["label"] ?? "Reviewed discovery import","sourceType":source["sourceType"] ?? "provider_import","sourceReference":source["sourceReference"] ?? source["reference"] ?? id,"sourceActor":source["sourceActor"] ?? "","sourcedAt":source["sourcedAt"] ?? source["checkedAt"] ?? ""]
+                for(key,value) in try Store.validatedCandidateSource(acquisition,defaultType:"provider_import",now:now){agent[key]=value}
+            }
             for(key,value) in try AgentIdentity.normalized(identity,existing:existing){agent[key]=value}
             let overrides=Set(agent["localOverrides"] as? [String] ?? []),prior=agent["importedCoreValues"] as? Record ?? [:]
             var managed=prior

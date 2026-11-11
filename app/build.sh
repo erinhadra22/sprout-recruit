@@ -44,8 +44,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>Sprout Recruit</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.10.0</string>
-<key>CFBundleVersion</key><string>25</string>
+<key>CFBundleShortVersionString</key><string>0.10.4</string>
+<key>CFBundleVersion</key><string>29</string>
 <key>SproutRecoveryCLIVersion</key><integer>1</integer>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>NSDocumentsFolderUsageDescription</key><string>Sprout opens your existing recruiting workspace and keeps verified local recovery snapshots.</string>

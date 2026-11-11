@@ -1,6 +1,7 @@
 import Foundation
 
 func runTests() throws {
+    try runCandidateProvenanceTests()
     try runAgentIdentityTests()
     try runProfessionalProfileTests()
     try runTeamTests()
@@ -8,10 +9,14 @@ func runTests() throws {
     try runSourcingRulesTests()
     try runMessagesHistoryReaderTests()
     try runGmailAPIClientTests()
+    try runNonblockingCredentialReadTests()
     try runGmailOAuthTests()
     try runCalendarAuthorizationTests()
     try runGoogleCalendarClientTests()
+    try runCalendarConnectionTests()
+    try runCalendarBookingCredentialTests()
     try runMeetingsTests()
+    try runMeetingProposalsTests()
     try runGmailSyncTests()
     try runGmailSyncCoordinatorTests()
     try runReplySyncDispatchGateTests()

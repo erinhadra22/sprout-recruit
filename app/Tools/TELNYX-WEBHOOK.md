@@ -1,0 +1,11 @@
+# Telnyx webhook receiver
+
+Run the receiver with Node 22 or later. On the current Mac, the bundled Node path is recorded in `START-HERE.md`. Set `TELNYX_PUBLIC_KEY` to the base64 Ed25519 **public** key for the Telnyx account or messaging profile serving this endpoint. Set `SPROUT_TELNYX_SPOOL` to an absolute private directory outside the repository whose parent already exists. The receiver creates the final directory with mode `0700` if needed. Start it with `node app/Tools/telnyx_webhook.cjs`. The default port is 8788 and `SPROUT_TELNYX_PORT` can override it.
+
+The listener binds to loopback and accepts `POST /webhooks/telnyx`. A later hosted deployment needs an approved HTTPS endpoint that forwards the original body and signature headers. Configure that endpoint on the dedicated Telnyx voice connection and messaging profile. Use the matching public key for each source if the keys differ. This receiver uses one public key per process. [Telnyx webhook verification](https://github.com/team-telnyx/ai/blob/main/skills/telnyx-voice-streaming-javascript/SKILL.md#webhook-verification) · [Telnyx webhook delivery](https://support.telnyx.com/en/articles/4334722-how-to-leverage-webhooks)
+
+The receiver verifies the signature against the unmodified body and rejects delivery timestamps more than five minutes from the receiver clock. It checks the event ID, event timestamp and payload envelope before saving selected call, recording and SMS events. Each supported event is saved as the original JSON under `<data.id>.json` and acknowledged only after the write. Duplicate deliveries preserve the first saved copy. Consumers should ignore temporary files and independently verify the intended call or message identity before updating a candidate. Keep an event ID receipt when adding a retention or acknowledgment policy so later retries remain safe.
+
+Spool entries can contain phone numbers, texts and signed media URLs. Keep this directory private and outside source control. The receiver does not expose any read endpoint. Configure authorized consumption, retention and capacity monitoring before deployment.
+
+Run `node --test app/Tools/telnyx_webhook.test.cjs` for a signed request fixture and a disposable spool. The test exercises the request handler without binding a socket.

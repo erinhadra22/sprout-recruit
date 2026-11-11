@@ -8,8 +8,12 @@ import TelnyxRTC
 final class CallController: NSObject, ObservableObject {
     @Published var tokenInput = ""
     @Published var rememberToken = false
-    @Published var callerNumber = ""
-    @Published var destination = ""
+    @Published var callerNumber = "" {
+        didSet { if callerNumber != oldValue { recipientReady = false } }
+    }
+    @Published var destination = "" {
+        didSet { if destination != oldValue { recipientReady = false } }
+    }
     @Published var recordingConfigured = false
     @Published var recipientReady = false
     @Published private(set) var connection = "Disconnected"
@@ -144,6 +148,7 @@ final class CallController: NSObject, ObservableObject {
             disconnect(); message = "The session expired. Connect with a fresh token."; return
         }
         busy = true // Freeze this exact request while the microphone prompt is open.
+        recipientReady = false // Require fresh consent before each test attempt.
         message = ""
         AVAudioSession.sharedInstance().requestRecordPermission { [weak self] allowed in
             DispatchQueue.main.async {
@@ -162,6 +167,7 @@ final class CallController: NSObject, ObservableObject {
     private func startSystemCall(from: String, to: String) {
         let id = UUID()
         var next = PilotCallRecord(id: id, from: from, to: to, requestedAt: Date())
+        next.operatorConfirmedTestConsent = true
         next.append("User requested designated test call; provider recording unverified")
         do { try journal?.save(next) }
         catch { busy = false; message = "Cannot save the call record. No call was placed."; return }

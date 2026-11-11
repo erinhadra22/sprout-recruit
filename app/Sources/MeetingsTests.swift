@@ -49,6 +49,36 @@ func runMeetingsTests() throws {
     try check(try store.prepareMeetingBooking(preparedPayload)["id"] as? String==id,"submitted/booked replay retains frozen request after defaults change")
     try rejects("future meeting cannot be marked held") { _ = try store.markMeetingHeld(["id":id,"heldAt":Store.now(),"confirmed":true]) }
 
+    var refreshedEvent=event
+    refreshedEvent["attendees"]=[["email":"agent@example.com","responseStatus":"accepted"],["email":"manager@example.com"]]
+    refreshedEvent["start"]=["dateTime":"2030-01-10T13:00:00Z"]
+    refreshedEvent["end"]=["dateTime":"2030-01-10T14:00:00Z"]
+    var wrongRefresh=refreshedEvent;wrongRefresh["iCalUID"]="wrong-event"
+    try rejects("refresh must match the saved Google UID") { try store.applyCalendarRefresh(id:id,event:wrongRefresh) }
+    var missingAttendee=refreshedEvent;missingAttendee["attendees"]=[["email":"different@example.com"]]
+    try rejects("refresh must still identify the exact candidate") { try store.applyCalendarRefresh(id:id,event:missingAttendee) }
+    try store.applyCalendarRefresh(id:id,event:refreshedEvent)
+    let refreshed=try store.get("meetings",id)
+    try check(refreshed["agentCalendarResponse"] as? String=="accepted" && refreshed["startsAt"] as? String=="2030-01-10T13:00:00Z" &&
+              refreshed["bookedAt"] as? String==booked["bookedAt"] as? String && refreshed["heldAt"]==nil,"readback saves RSVP and reschedule while preserving booking and attendance evidence")
+    var declined=refreshedEvent;declined["attendees"]=[["email":"agent@example.com","responseStatus":"declined"],["email":"manager@example.com"]]
+    try store.applyCalendarRefresh(id:id,event:declined)
+    try check(try store.get("meetings",id)["agentCalendarResponse"] as? String=="declined" &&
+              store.get("agents","meeting-agent")["status"] as? String=="Meeting scheduled","declined RSVP is saved while the event remains booked")
+    let cancelled:Record=["id":booked["googleEventId"]!,"status":"cancelled"]
+    try store.applyCalendarRefresh(id:id,event:cancelled)
+    try check(try store.get("agents","meeting-agent")["status"] as? String=="Identified","verified cancellation restores the prior contact status")
+    let beforeCancellationReplay=try store.all("activities").count
+    try store.applyCalendarRefresh(id:id,event:cancelled)
+    try check(try store.all("activities").count==beforeCancellationReplay && store.get("meetings",id)["bookedAt"] as? String==booked["bookedAt"] as? String,"cancellation replay preserves historical booking")
+    try store.applyCalendarRefresh(id:id,event:refreshedEvent)
+    try check(try store.get("agents","meeting-agent")["status"] as? String=="Meeting scheduled","restored Calendar event reactivates its unchanged stage")
+    var advanced=try store.get("agents","meeting-agent");advanced["status"]="Negotiating";try store.put("agents",advanced)
+    try store.applyCalendarRefresh(id:id,event:cancelled)
+    try check(try store.get("agents","meeting-agent")["status"] as? String=="Negotiating","late cancellation preserves a subsequent contact stage")
+    try store.applyCalendarRefresh(id:id,event:refreshedEvent)
+    try check(try store.get("agents","meeting-agent")["status"] as? String=="Negotiating","reinstatement cannot overwrite a later contact stage")
+
     // Exact call linkage is a deliberate selection, never the most recent call.
     try store.put("activities",["id":"connected-call","agentId":"meeting-agent","kind":"interaction","title":"Call — Connected","date":Store.now()])
     try store.put("activities",["id":"no-answer","agentId":"meeting-agent","kind":"interaction","title":"Call — No answer","date":Store.now()])

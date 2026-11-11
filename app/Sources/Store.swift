@@ -13,7 +13,7 @@ final class Store {
     private var db: OpaquePointer?
     let path: String
     let stages = ["Identified", "Called", "Contacted", "Connected", "Meeting scheduled", "Meeting held", "Negotiating", "Contract out", "Recruited", "Lost", "Not interested", "Not qualified", "Do not contact"]
-    let kinds = ["agents", "tasks", "deletedTasks", "activities", "watchlists", "searches", "drafts", "alerts", "settings", "communications", "externalMessages", "contextSuggestions", "performance", "reports", "workflows", "workflowEvents", "sequences", "aiJobs", "candidateFeedback", "importBatches", "customFields", "agentPhotos", "outboxJobs", "outboxEvents", "professionalProfiles", "teams", "teamMemberships", "serviceAreas", "sourceMappings", "discoveryProspects", "prospectingEvidence", "meetings"]
+    let kinds = ["agents", "tasks", "deletedTasks", "activities", "watchlists", "searches", "drafts", "alerts", "settings", "communications", "externalMessages", "contextSuggestions", "performance", "reports", "workflows", "workflowEvents", "sequences", "aiJobs", "candidateFeedback", "importBatches", "customFields", "agentPhotos", "outboxJobs", "outboxEvents", "professionalProfiles", "teams", "teamMemberships", "serviceAreas", "sourceMappings", "discoveryProspects", "prospectingEvidence", "meetings", "meetingProposals"]
     static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
     static func now() -> String { ISO8601DateFormatter().string(from: Date()) }
     static func day(_ date: Date = Date()) -> String {
@@ -343,6 +343,16 @@ final class Store {
             _ = try consistentBackup(label:"before-meeting-held")
             return try transaction { _ = try self.markMeetingHeld(p);return try self.snapshot() }
         }
+        if action == "meetings.status" {
+            guard Set(p.keys)==["id"],let id=p["id"] as? String,UUID(uuidString:id) != nil else {throw StoreError(message:"Select the exact booking ID.")}
+            if let meeting=try all("meetings").first(where:{$0["id"] as? String == id.lowercased()}) {return ["exists":true,"state":meeting["state"] ?? "prepared","googleEventId":meeting["googleEventId"] ?? ""]}
+            return ["exists":false]
+        }
+        if action == "meetings.context" { return try meetingContext(p) }
+        if action == "meetings.propose" {
+            _ = try consistentBackup(label:"before-meeting-proposal")
+            return try transaction { try saveMeetingProposal(p);return try snapshot() }
+        }
         if action == "meetings.preview" { return try previewMeetingBooking(p) }
         if action == "report.weeklyContent" { return try Store.weeklyReportEmailContent(managerReport(p.isEmpty ? Store.weeklyReportWindow(timeZone:weeklyReportDeliveryPlan()["timeZone"] as? String ?? "America/Chicago") : p),plan:weeklyReportDeliveryPlan()) }
         if action == "performance.report" { return try managerReport(p) }
@@ -363,7 +373,7 @@ final class Store {
                 return result
             }
         }
-        if ["sourcingRules.save","meetings.participants.save","report.deliveryPlan.save","report.automation.save","report.delivery.record"].contains(action) {
+        if ["agent.create","agent.intake","sourcingRules.save","meetings.participants.save","report.deliveryPlan.save","report.automation.save","report.delivery.record"].contains(action) {
             _ = try consistentBackup(label:"before-"+action.replacingOccurrences(of:".",with:"-"))
         }
         return try transaction {
@@ -397,13 +407,48 @@ final class Store {
             case "onboarding.save": try self.saveOnboarding(p)
             case "sample.purge":
                 try self.purgeSampleContacts()
-            case "agent.create":
+            case "agent.create", "agent.intake":
                 let name = try required(p,"name",max:120)
                 let linkedIn = try Store.linkedInProfileURL(p["linkedinUrl"] as? String ?? "")
+                let now = Store.now()
+                if action == "agent.intake", (p["sourceType"] as? String ?? "").isEmpty { throw StoreError(message:"Automated intake requires an explicit source type.") }
+                var sourceInput = p
+                if p["sourceType"] as? String == "ai_agent", (p["sourcedAt"] as? String ?? "").isEmpty { sourceInput["sourcedAt"] = now }
+                let provenance = try Store.validatedCandidateSource(sourceInput,now:now)
+                // Explicit stable intake keys prevent retrying agents from creating duplicates.
+                var intakeID: String? = nil
+                var intakeDigest: String? = nil
+                if action == "agent.intake" {
+                    let key = try required(p,"intakeKey",max:200)
+                    intakeID = "intake-" + SHA256.hash(data:Data(key.utf8)).map { String(format:"%02x",$0) }.joined()
+                    let bytes = try JSONSerialization.data(withJSONObject:p,options:[.sortedKeys])
+                    intakeDigest = SHA256.hash(data:bytes).map { String(format:"%02x",$0) }.joined()
+                    if let saved = try? self.get("agents",intakeID!) {
+                        guard saved["sourceIntakeDigest"] as? String == intakeDigest else { throw StoreError(message:"This intake key already has different candidate evidence. Review the existing contact before retrying.") }
+                        break
+                    }
+                }
                 let identity = try self.prepareAgentIntake(p)
+                var sourceAssessment: Record? = nil
+                if provenance["sourceType"] as? String != "manual" {
+                    let assessment = try self.sourcingRuleAssessment(fields:p,asOf:Store.prospectingLocalDay())
+                    guard assessment["state"] as? String == "eligible" else { throw StoreError(message:"Candidate intake is blocked by the current target-audience rules: " + ((assessment["reasons"] as? [String] ?? []) + (assessment["missingEvidence"] as? [String] ?? [])).joined(separator:" ")) }
+                    sourceAssessment = assessment.merging(["checkedAt":now]) { _, new in new }
+                }
                 var r: Record = ["id":UUID().uuidString,"name":name,"office":p["office"] as? String ?? "Independent","city":p["city"] as? String ?? "","email":p["email"] as? String ?? "","phone":p["phone"] as? String ?? "","linkedinUrl":linkedIn,"source":"Manual contact","datasetId":"live","manual":true,"status":"Identified","assignee":try operatorName(),"liked":false,"disposition":"","createdAt":Store.now(),"history":[],"transactions":[],"signals":[],"move":"Unknown"]
                 for (key,value) in identity { r[key] = value }
-                try self.put("agents",r); try self.recordContactEvent(agentId:r["id"] as! String,type:"contact.created",source:"Manual contact",occurredAt:r["createdAt"] as? String,dedupeKey:"contact-created:"+(r["id"] as! String))
+                for (key,value) in provenance { r[key] = value }
+                r["createdAt"] = now
+                for key in ["brand","teamName"] {
+                    if let value = p[key] as? String {
+                        guard value.count <= 250 else { throw StoreError(message:"Candidate affiliation is too long.") }
+                        r[key] = value.trimmingCharacters(in:.whitespacesAndNewlines)
+                    }
+                }
+                if let sourceAssessment = sourceAssessment { r["sourcingRulesAssessment"] = sourceAssessment }
+                r["manual"] = provenance["sourceType"] as? String == "manual"
+                if let intakeID = intakeID { r["id"] = intakeID; r["sourceIntakeDigest"] = intakeDigest }
+                try self.put("agents",r); try self.recordContactEvent(agentId:r["id"] as! String,type:"contact.created",source:r["source"] as! String,sourceRecordId:r["sourceReference"] as? String ?? "",occurredAt:now,dedupeKey:"contact-created:"+(r["id"] as! String))
             case "agent.verifyCommunication":
                 let requestedKeys = Set(p.keys)
                 guard requestedKeys == Set(["agentId","name","phone","confirmed"])

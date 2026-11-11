@@ -21,7 +21,7 @@ final class GoogleCalendarClient {
         return UUID(uuidString:value)?.uuidString.lowercased()
     }
     private static func envelope(_ raw:Record)throws->Record{
-        let keys:Set<String>=["id","summary","start","end","attendees","extendedProperties"]
+        let keys:Set<String>=["id","summary","start","end","attendees","extendedProperties","description","location"]
         guard Set(raw.keys).isSubset(of:keys),let id=raw["id"] as? String,let booking=bookingID(id),
               let title=raw["summary"] as? String,!title.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,title.count<=500,!title.contains("\0"),
               let start=raw["start"] as? Record,let end=raw["end"] as? Record,
@@ -30,14 +30,25 @@ final class GoogleCalendarClient {
               let starts=GmailAPIClient.date(startString),let ends=GmailAPIClient.date(endString),ends>starts,ends.timeIntervalSince(starts)<=14400,
               let zone=start["timeZone"] as? String,TimeZone(identifier:zone) != nil,end["timeZone"] as? String==zone,
               let attendees=raw["attendees"] as? [Record],(1...21).contains(attendees.count) else{throw error("calendar_invalid_event","Preview a complete meeting with its exact booking ID, time zone and attendees before booking.")}
+        for (key,limit) in [("description",8000),("location",500)] {
+            guard raw[key]==nil || raw[key] is String,
+                  (raw[key] as? String ?? "").count<=limit,
+                  !(raw[key] as? String ?? "").contains("\0") else {
+                throw error("calendar_invalid_event","Meeting invitation details are invalid.")
+            }
+        }
         let emails=try attendees.map{attendee -> String in
             guard Set(attendee.keys)==["email"],let raw=attendee["email"] as? String,let email=GmailAPIClient.email(raw),email==raw else{throw error("calendar_invalid_event","Meeting attendees must be distinct complete email addresses.")};return email
         }
         guard Set(emails).count==emails.count else{throw error("calendar_invalid_event","Meeting attendees must be distinct complete email addresses.")}
+        var ownership=["sproutBookingID":booking]
         if let value=raw["extendedProperties"]{
-            guard let properties=value as? Record,Set(properties.keys)==["private"],let privateValues=properties["private"] as? [String:String],Set(privateValues.keys)==["sproutBookingID"],privateValues["sproutBookingID"]==booking else{throw error("calendar_invalid_event","The calendar ownership marker does not match this booking ID.")}
+            guard let properties=value as? Record,Set(properties.keys)==["private"],let privateValues=properties["private"] as? [String:String],Set(privateValues.keys).isSubset(of:["sproutBookingID","sproutAgentID"]),privateValues["sproutBookingID"]==booking else{throw error("calendar_invalid_event","The calendar ownership marker does not match this booking ID.")}
+            if let agentID=privateValues["sproutAgentID"]{
+                guard !agentID.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,agentID.count<=200,!agentID.unicodeScalars.contains(where:{CharacterSet.controlCharacters.contains($0)}) else{throw error("calendar_invalid_event","The calendar contact marker is invalid.")};ownership["sproutAgentID"]=agentID
+            }
         }
-        var result=raw;result["extendedProperties"]=["private":["sproutBookingID":booking]]
+        var result=raw;result["extendedProperties"]=["private":ownership]
         return result
     }
     private static func owned(_ actual:Record,expected:Record)throws->Record{
@@ -51,6 +62,9 @@ final class GoogleCalendarClient {
                 guard let privateValues=rawPrivate as? Record else{throw error("calendar_identity_mismatch","Calendar event ownership metadata is malformed. Keep the booking pending for reconciliation.")};actualPrivate=privateValues
             }
         }
+        if let expectedAgent=((expected["extendedProperties"] as? Record)?["private"] as? [String:String])?["sproutAgentID"]{
+            guard actualPrivate?["sproutAgentID"] as? String==expectedAgent else{throw error("calendar_identity_mismatch","That calendar event belongs to a different contact. Keep this booking pending for reconciliation.")}
+        }
         if let marker=actualPrivate?["sproutBookingID"]{
             guard marker as? String==expectedMarker else{throw error("calendar_identity_mismatch","That calendar event belongs to a different booking. Keep this booking pending for reconciliation.")}
         }else{
@@ -59,6 +73,11 @@ final class GoogleCalendarClient {
             guard (actual["organizer"] as? Record)?["self"] as? Bool==true else{throw error("calendar_identity_mismatch","Calendar event ownership could not be verified. Keep the booking pending for reconciliation.")}
         }
         guard actual["summary"] as? String==expected["summary"] as? String else{throw error("calendar_event_changed","The calendar meeting title changed. Reconcile the existing event before retrying.")}
+        for key in ["description","location"] {
+            guard (actual[key] as? String ?? "")==(expected[key] as? String ?? "") else {
+                throw error("calendar_event_changed","The calendar invitation details changed. Reconcile the saved event.")
+            }
+        }
         for key in ["start","end"]{
             guard let found=actual[key] as? Record,let wanted=expected[key] as? Record,
                   let foundString=found["dateTime"] as? String,let wantedString=wanted["dateTime"] as? String,
@@ -84,8 +103,20 @@ final class GoogleCalendarClient {
             catch{return .failure(Self.error("calendar_invalid_response","Google Calendar returned an invalid event response."))}
         })}
     }
+    private static func validToken(_ token:String)->Bool {
+        !token.isEmpty && token.count<16384 && !token.contains(where:{$0.isWhitespace || $0.isNewline}) && !token.unicodeScalars.contains(where:{CharacterSet.controlCharacters.contains($0)})
+    }
+    func readBookedEvent(id:String,token:String,completion:@escaping(Result<Record,Error>)->Void) {
+        guard Self.bookingID(id) != nil else {
+            completion(.failure(Self.error("calendar_invalid_event","The saved Google Calendar event ID is invalid.")));return
+        }
+        guard Self.validToken(token) else {
+            completion(.failure(Self.error("authorization_required","Reconnect Google Calendar before checking the event.")));return
+        }
+        request(method:"GET",id:id,event:nil,token:token,completion:completion)
+    }
     func ensureEvent(event:Record,token:String,allowInsert:Bool=true,completion:@escaping(Result<Record,Error>)->Void){
-        guard !token.isEmpty,token.count<16384,!token.contains(where:{$0.isWhitespace || $0.isNewline}),!token.unicodeScalars.contains(where:{CharacterSet.controlCharacters.contains($0)}) else{completion(.failure(Self.error("authorization_required","Reconnect Google Calendar before booking.")));return}
+        guard Self.validToken(token) else{completion(.failure(Self.error("authorization_required","Reconnect Google Calendar before booking.")));return}
         let expected:Record
         do{expected=try Self.envelope(event)}catch{completion(.failure(error));return}
         let id=expected["id"] as! String

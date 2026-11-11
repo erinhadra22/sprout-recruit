@@ -13,6 +13,12 @@ enum MeetingValidation {
         guard Set(emails).count==emails.count else { throw StoreError(message:"Each meeting participant must have a distinct email address.") }
         return emails
     }
+    static func text(_ raw:Any?,field:String,limit:Int) throws -> String {
+        guard raw==nil || raw is String else { throw StoreError(message:"Meeting \(field) must contain text.") }
+        let value=(raw as? String ?? "").trimmingCharacters(in:.whitespacesAndNewlines)
+        guard value.count<=limit,!value.contains("\0") else { throw StoreError(message:"Meeting \(field) is too long or contains invalid characters.") }
+        return value
+    }
     static func integer(_ value: Any?,_ allowed: ClosedRange<Int>) -> Int? {
         guard let raw=value as? NSNumber,CFGetTypeID(raw) != CFBooleanGetTypeID(),raw.doubleValue==Double(raw.intValue),allowed.contains(raw.intValue) else { return nil }
         return raw.intValue
@@ -45,7 +51,7 @@ extension Store {
         guard expected==old["revision"] as? Int else { throw StoreError(message:"Meeting participants changed. Reload before saving.") }
         try put("settings",["id":"meeting-participants","participants":participants,"defaultDurationMinutes":duration,"revision":expected+1,"updatedAt":Store.now()])
     }
-    private func meetingConversation(_ key: String,_ aid: String) throws -> Record {
+    func meetingConversation(_ key: String,_ aid: String) throws -> Record {
         guard !key.isEmpty else { return [:] }
         if key.hasPrefix("workflow:") {
             let id=String(key.dropFirst(9)),call=try get("workflows",id)
@@ -62,7 +68,7 @@ extension Store {
         throw StoreError(message:"Choose a verified connected conversation or leave the call link empty.")
     }
     private func meetingBookingPlan(_ p: Record) throws -> Record {
-        let allowed:Set<String>=["id","agentId","expectedAgentEmail","expectedParticipantsRevision","localDateTime","timeZone","durationMinutes","internalParticipants","linkedConversationID","previewToken"]
+        let allowed:Set<String>=["id","agentId","expectedAgentEmail","expectedParticipantsRevision","localDateTime","timeZone","durationMinutes","internalParticipants","linkedConversationID","previewToken","title","description","location","proposalId"]
         guard Set(p.keys).isSubset(of:allowed),let rawID=p["id"] as? String,let uuid=UUID(uuidString:rawID),
               let aid=p["agentId"] as? String,let expectedEmail=p["expectedAgentEmail"] as? String,
               let expectedRevision=MeetingValidation.integer(p["expectedParticipantsRevision"],0...Int.max),
@@ -79,13 +85,31 @@ extension Store {
         guard start>Date() else { throw StoreError(message:"Choose a future meeting time.") }
         let end=start.addingTimeInterval(Double(duration*60)),iso=ISO8601DateFormatter(),id=uuid.uuidString.lowercased(),eventID="sprout"+id.replacingOccurrences(of:"-",with:"")
         let name=agent["name"] as? String ?? "Contact",attendees=[email]+internalEmails
-        let title="Sprout recruiting meeting — "+name
+        let suppliedTitle=try MeetingValidation.text(p["title"],field:"title",limit:500)
+        let title=suppliedTitle.isEmpty ? "Sprout recruiting meeting — "+name : suppliedTitle
         var record:Record=["id":id,"agentId":aid,"agentEmail":email,"agentName":name,"priorStatus":agent["status"] as? String ?? "","state":"prepared","source":"google_calendar","googleEventId":eventID,
             "startsAt":iso.string(from:start),"endsAt":iso.string(from:end),"localDateTime":local,"timeZone":zone,"durationMinutes":duration,
             "attendees":attendees,"internalParticipants":internalEmails,"participantsRevision":expectedRevision,"title":title]
+        for (key,limit) in [("description",8000),("location",500)] {
+            let value=try MeetingValidation.text(p[key],field:key,limit:limit)
+            if !value.isEmpty { record[key]=value }
+        }
+        guard p["proposalId"]==nil || p["proposalId"] is String else { throw StoreError(message:"Choose a valid saved meeting request.") }
+        if let proposalID=p["proposalId"] as? String {
+            let proposal=try get("meetingProposals",proposalID)
+            guard proposalID==id,proposal["agentId"] as? String==aid,
+                  ["needs_details","ready"].contains(proposal["state"] as? String ?? "") else {
+                throw StoreError(message:"This meeting request is no longer available for this contact.")
+            }
+            record["proposalId"]=proposalID
+            record["proposalRevision"]=proposal["revision"]
+        }
         for (key,value) in try meetingConversation(p["linkedConversationID"] as? String ?? "",aid) { record[key]=value }
         let token=CourtedCSV.hash(try JSONSerialization.data(withJSONObject:record,options:.sortedKeys));record["previewToken"]=token
         record["googleEvent"]=["id":eventID,"summary":title,"start":["dateTime":record["startsAt"]!,"timeZone":zone],"end":["dateTime":record["endsAt"]!,"timeZone":zone],"attendees":attendees.map{["email":$0]},"extendedProperties":["private":["sproutBookingID":id,"sproutAgentID":aid]]]
+        var googleEvent=record["googleEvent"] as! Record
+        for key in ["description","location"] { if let value=record[key] { googleEvent[key]=value } }
+        record["googleEvent"]=googleEvent
         return record
     }
     func previewMeetingBooking(_ p: Record) throws -> Record { try meetingBookingPlan(p) }
@@ -99,15 +123,22 @@ extension Store {
         let plan=try meetingBookingPlan(p)
         guard p["previewToken"] as? String==plan["previewToken"] as? String else { throw StoreError(message:"Preview this exact meeting before booking it.") }
         let id=plan["id"] as! String
-        if let old=try all("meetings").first(where:{$0["id"] as? String==id}) {
-            guard old["previewToken"] as? String==plan["previewToken"] as? String else { throw StoreError(message:"This booking ID already belongs to a different meeting. Reconcile it before retrying.") }
-            return old
+        let prior=try all("meetings").first(where:{$0["id"] as? String==id})
+        if let old=prior {
+            if old["previewToken"] as? String==plan["previewToken"] as? String { return old }
+            guard old["state"] as? String=="prepared",old["submittedAt"]==nil,
+                  old["proposalId"] as? String==id,plan["proposalId"] as? String==id,
+                  old["agentId"] as? String==plan["agentId"] as? String else {
+                throw StoreError(message:"This booking ID already belongs to a different meeting. Reconcile it before retrying.")
+            }
         }
         _ = try consistentBackup(label:"before-meeting-booking")
         return try transaction {
             let locked=try meetingBookingPlan(p)
             guard locked["previewToken"] as? String==plan["previewToken"] as? String else { throw StoreError(message:"The meeting details changed during backup. Preview again.") }
-            var saved=locked;saved["createdAt"]=Store.now();saved["requestPayload"]=p.filter { $0.key != "previewToken" };try put("meetings",saved);return saved
+            var saved=locked;saved["createdAt"]=prior?["createdAt"] ?? Store.now()
+            if let previous=prior?["previewToken"] { saved["previousPreviewToken"]=previous }
+            saved["requestPayload"]=p.filter { $0.key != "previewToken" };try put("meetings",saved);return saved
         }
     }
     func markMeetingSubmitted(_ id: String) throws -> Record {
@@ -138,6 +169,11 @@ extension Store {
               MeetingValidation.instant(endString)==MeetingValidation.instant(old["endsAt"] as? String ?? ""),
               start["timeZone"] as? String==old["timeZone"] as? String,end["timeZone"] as? String==old["timeZone"] as? String,
               let rawAttendees=event["attendees"] as? [Record],rawAttendees.count==(old["attendees"] as? [String])?.count else { throw StoreError(message:"Google Calendar readback does not match the prepared meeting. Keep the booking pending and reconcile the event ID.") }
+        guard event["summary"] as? String==old["title"] as? String,
+              (event["description"] as? String ?? "")==(old["description"] as? String ?? ""),
+              (event["location"] as? String ?? "")==(old["location"] as? String ?? "") else {
+            throw StoreError(message:"Google Calendar invitation details do not match the reviewed meeting.")
+        }
         let attendees=try rawAttendees.map { try MeetingValidation.email($0["email"] as? String ?? "") }
         guard Set(attendees)==Set(old["attendees"] as? [String] ?? []),Set(attendees).count==attendees.count else { throw StoreError(message:"Google Calendar attendee readback does not match this meeting.") }
         if old["state"] as? String=="booked" {
@@ -150,11 +186,118 @@ extension Store {
             guard agent["status"] as? String==record["priorStatus"] as? String || agent["status"] as? String=="Meeting scheduled" else { throw StoreError(message:"The contact status changed while booking. Reconcile the saved calendar event before changing it.") }
             let now=Store.now();record["state"]="booked";record["status"]="confirmed";record["iCalUID"]=uid;record["bookedAt"]=now;record["providerVerifiedAt"]=now;record["googleCalendarEvent"]=event
             if let link=event["htmlLink"] as? String { record["googleHtmlLink"]=link }
+            if let account=p["calendarAccountAddress"] as? String,!account.isEmpty { record["calendarAccountAddress"]=account }
             try put("meetings",record)
+            try completeMeetingProposal(record)
             agent["status"]="Meeting scheduled";agent["statusAt"]=now;try put("agents",agent)
-            try put("activities",["id":"meeting-booked-"+id,"agentId":record["agentId"]!,"meetingId":id,"kind":"interaction","title":"Meeting — Booked","date":now,"createdAt":now,"recordedAt":now,"author":try operatorName(),"body":"Google Calendar event confirmed for \(record["startsAt"] as? String ?? "") (\(record["timeZone"] as? String ?? "")).","provider":"google_calendar","providerEventId":eventID,"pinned":false])
+            try put("activities",["id":"meeting-booked-"+id,"agentId":record["agentId"]!,"meetingId":id,"kind":"interaction","title":"Meeting — Booked","date":now,"createdAt":now,"recordedAt":now,"author":try operatorName(),"body":meetingActivityDetails(record),"provider":"google_calendar","providerEventId":eventID,"pinned":false])
             return record
         }
+    }
+    // Trusted native readback only. Keep the original booking request, booking
+    // timestamp and call linkage intact when Google changes the live event.
+    func applyCalendarRefresh(id:String,event:Record) throws {
+        let saved=try get("meetings",id)
+        let status=event["status"] as? String ?? ""
+        let uid=event["iCalUID"] as? String
+        let properties=event["extendedProperties"] as? Record
+        let marker=properties?["private"] as? Record
+        guard saved["state"] as? String=="booked",saved["providerVerifiedAt"] is String,
+              let eventID=saved["googleEventId"] as? String,event["id"] as? String==eventID,
+              let savedUID=saved["iCalUID"] as? String,!savedUID.isEmpty,
+              let aid=saved["agentId"] as? String,["confirmed","cancelled","tentative"].contains(status),
+              event["extendedProperties"]==nil || properties != nil,
+              properties?["private"]==nil || marker != nil,
+              marker?["sproutBookingID"].map({ ($0 as? String)==id }) ?? true,
+              marker?["sproutAgentID"].map({ ($0 as? String)==aid }) ?? true,
+              status=="cancelled" ? (event["iCalUID"]==nil || uid==savedUID) : uid==savedUID else {
+            throw StoreError(message:"Google Calendar did not return the exact saved booking. Sprout made no changes.")
+        }
+        var updates:Record=["status":status]
+        if status != "cancelled" {
+            guard event["attendeesOmitted"] as? Bool != true,
+                  let agentEmail=saved["agentEmail"] as? String,let attendees=event["attendees"] as? [Record],
+                  let start=event["start"] as? Record,let end=event["end"] as? Record,
+                  let startText=start["dateTime"] as? String,let endText=end["dateTime"] as? String,
+                  let starts=MeetingValidation.instant(startText),let ends=MeetingValidation.instant(endText),ends>starts,
+                  let zone=TimeZone(identifier:(start["timeZone"] as? String) ?? (saved["timeZone"] as? String ?? "")) else {
+                throw StoreError(message:"The Google Calendar event has incomplete attendee or time information. Review it in Calendar.")
+            }
+            let emails=try attendees.map { try MeetingValidation.email($0["email"] as? String ?? "") }
+            guard Set(emails).count==emails.count,let index=emails.firstIndex(of:agentEmail) else {
+                throw StoreError(message:"The saved contact is no longer uniquely identifiable on this Google Calendar event.")
+            }
+            let response=attendees[index]["responseStatus"] as? String ?? "needsAction"
+            guard ["needsAction","accepted","tentative","declined"].contains(response) else {
+                throw StoreError(message:"Google Calendar returned an unknown RSVP. Review it in Calendar.")
+            }
+            let iso=ISO8601DateFormatter()
+            updates["startsAt"]=iso.string(from:starts)
+            updates["endsAt"]=iso.string(from:ends)
+            updates["timeZone"]=zone.identifier
+            updates["durationMinutes"]=Int((ends.timeIntervalSince(starts)/60).rounded())
+            updates["attendees"]=emails.sorted()
+            updates["agentCalendarResponse"]=response
+            for (key,limit) in [("summary",500),("description",8000),("location",500)] {
+                let value=try MeetingValidation.text(event[key],field:key,limit:limit)
+                updates[key=="summary" ? "title" : key]=value
+            }
+        }
+        let changed=updates.contains { key,value in
+            if key=="attendees" { return (saved[key] as? [String])?.sorted() != value as? [String] }
+            guard let old=saved[key] else { return true }
+            return !NSDictionary(dictionary:[key:old]).isEqual(to:[key:value])
+        }
+        guard changed else { return }
+        _ = try consistentBackup(label:"before-calendar-refresh")
+        try transaction {
+            var meeting=saved
+            for (key,value) in updates { meeting[key]=value }
+            let now=Store.now()
+            meeting["calendarRefreshedAt"]=now
+            meeting["googleCalendarEvent"]=event
+            var agent=try get("agents",aid)
+            let active=saved["status"] as? String != "cancelled"
+            if status=="cancelled",active,saved["heldAt"]==nil,
+               let previous=saved["priorStatus"] as? String,previous != "Meeting scheduled",
+               agent["status"] as? String=="Meeting scheduled",
+               agent["statusAt"] as? String==(saved["calendarStageAt"] ?? saved["bookedAt"]) as? String {
+                let another=try all("meetings").contains { row in
+                    row["id"] as? String != id && row["agentId"] as? String==aid &&
+                    row["state"] as? String=="booked" && row["status"] as? String != "cancelled" && row["heldAt"]==nil
+                }
+                if !another {
+                    agent["status"]=previous;agent["statusAt"]=now;try put("agents",agent)
+                    meeting["calendarStageRestoredAt"]=now
+                }
+            } else if status=="confirmed",!active,saved["heldAt"]==nil,
+                      let restored=saved["calendarStageRestoredAt"] as? String,
+                      agent["statusAt"] as? String==restored,
+                      agent["status"] as? String==saved["priorStatus"] as? String {
+                agent["status"]="Meeting scheduled";agent["statusAt"]=now;try put("agents",agent)
+                meeting["calendarStageAt"]=now
+                meeting.removeValue(forKey:"calendarStageRestoredAt")
+            }
+            try put("meetings",meeting)
+            let revision:Record=["before":saved["googleCalendarEvent"] ?? [:],"after":updates,
+                "providerRevision":event["etag"] ?? event["updated"] ?? ""]
+            let digest=CourtedCSV.hash(try JSONSerialization.data(withJSONObject:revision,options:.sortedKeys))
+            try put("activities",["id":"meeting-calendar-"+id+"-"+digest,"agentId":aid,"meetingId":id,
+                "kind":"interaction","title":"Meeting — Updated from Google Calendar","body":meetingActivityDetails(meeting),
+                "date":now,"createdAt":now,"author":try operatorName(),"provider":"google_calendar","providerEventId":eventID,"pinned":false])
+        }
+    }
+    private func meetingActivityDetails(_ meeting:Record) -> String {
+        var lines=[meeting["title"] as? String ?? "Recruiting meeting",
+            "\(meeting["startsAt"] as? String ?? "") → \(meeting["endsAt"] as? String ?? "") (\(meeting["timeZone"] as? String ?? ""))",
+            "Attendees: "+(meeting["attendees"] as? [String] ?? []).joined(separator:", "),
+            "Calendar status: "+(meeting["status"] as? String ?? "confirmed")]
+        if let response=meeting["agentCalendarResponse"] as? String { lines.append("Contact RSVP: "+response) }
+        for key in ["location","description"] {
+            if let text=meeting[key] as? String,!text.isEmpty { lines.append(text) }
+        }
+        lines.append("Google event: "+(meeting["googleEventId"] as? String ?? ""))
+        return lines.joined(separator:"\n")
     }
     func markMeetingHeld(_ p: Record) throws -> Record {
         let keys=Set(p.keys)
@@ -166,7 +309,7 @@ extension Store {
         guard date<=Date() else { throw StoreError(message:"A meeting held time cannot be in the future.") }
         let held=ISO8601DateFormatter().string(from:date)
         var record=try get("meetings",id)
-        guard record["state"] as? String=="booked",record["providerVerifiedAt"] as? String != nil,let start=MeetingValidation.instant(record["startsAt"] as? String ?? ""),date>=start else { throw StoreError(message:"Only a verified booked meeting can be marked held, at or after its scheduled start.") }
+        guard record["state"] as? String=="booked",record["status"] as? String != "cancelled",record["providerVerifiedAt"] as? String != nil,let start=MeetingValidation.instant(record["startsAt"] as? String ?? ""),date>=start else { throw StoreError(message:"Only a verified booked meeting can be marked held, at or after its scheduled start.") }
         if let old=record["heldAt"] as? String { guard MeetingValidation.instant(old)==date else { throw StoreError(message:"This meeting already has a different held time.") };return record }
         record["heldAt"]=held;record["heldRecordedAt"]=Store.now();record["heldSource"]="user_confirmed"
         if let zone=p["timeZone"] as? String { record["heldTimeZone"]=zone;record["heldLocalDateTime"]=p["localDateTime"] }

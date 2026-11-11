@@ -65,6 +65,12 @@ final class GmailSyncCoordinator {
                 }
                 running = false; finish(true)
             } catch {
+                if (error as? GmailAPIError)?.code == "keychain_read_pending" {
+                    // A nonblocking credential read is still in progress. Keep
+                    // successful coverage/cursors intact and deny dispatch until
+                    // the completion notification requests a fresh scan.
+                    running = false; finish(false); onChange(); return
+                }
                 _ = try? store.command("gmailSync.failure",["generation":request["generation"] ?? 0,"message":error.localizedDescription,"errorCode":(error as? GmailAPIError)?.code ?? "gmail_scan_failed"])
                 running = false; finish(false); onChange()
             }

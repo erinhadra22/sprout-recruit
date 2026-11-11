@@ -13,9 +13,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  desktop:
-    runs-on: macos-latest
-    timeout-minutes: 20
+  fixtures:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -25,6 +25,18 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Run interface and webhook fixture checks
+        run: node --test app/Tests/*.test.cjs app/Tools/telnyx_webhook.test.cjs
+      - name: Run installer fixture checks
+        run: python3 -B app/Tests/installer_test.py
+  desktop:
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Build desktop app
         working-directory: app
         shell: bash
@@ -32,9 +44,6 @@ jobs:
       - name: Run native fixture checks
         working-directory: app
         run: zsh test.sh
-      - name: Run interface fixture checks
-        working-directory: app
-        run: node --test Tests/*.test.cjs
       - name: Run installer fixture checks
         run: python3 -B app/Tests/installer_test.py
       # No workspace data, signing secrets, or build artifacts are uploaded.

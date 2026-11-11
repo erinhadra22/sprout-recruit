@@ -45,6 +45,7 @@ struct PilotCallRecord: Codable, Identifiable {
     var telnyxSessionID: String?
     var telnyxLegID: String?
     var telnyxCallControlID: String?
+    var operatorConfirmedTestConsent: Bool?
     var providerRecording = "unverified"
     var events: [PilotEvent] = []
 

@@ -25,6 +25,10 @@
 !/app/Web/*.html
 !/app/Tests/
 !/app/Tests/*.cjs
+!/app/Tools/
+!/app/Tools/telnyx_webhook.cjs
+!/app/Tools/telnyx_webhook.test.cjs
+!/app/Tools/TELNYX-WEBHOOK.md
 !/app/Assets/
 !/app/Assets/*.svg
 !/app/Assets/*.png
