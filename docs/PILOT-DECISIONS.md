@@ -1,3 +1,13 @@
+# November 4, 2026 — reporting, meeting booking and sourcing exclusions
+
+Erin selected a Monday **09:00 America/Chicago** aggregate report to **cody@sprouthomes.com** for the prior Monday–Sunday week: calls/emails/texts made, appointments booked, meetings held and explicitly linked conversation-to-booking conversion. The report may disclose incomplete capture; it must not infer conversations from task completion or attendance from scheduled events.
+
+Changing status to **Meeting scheduled** must open a reviewed Calendar booking form. Internal attendees start with **erin@sprouthomes.com** and **cody@sprouthomes.com**, are manually editable in Settings, and default to **60 minutes**; the agent is the variable attendee. User acceptance includes adding another internal attendee in Settings and verifying the next booking picks it up. Calendar consent and invitations remain explicit user actions.
+
+Erin named **Monument Brokerage**, approved **Monument Realty** as an additional brokerage name, and named **Choose Charlie** / **Choose Charlie team** (Austin) for sourcing exclusions. Monument exclusion applies across markets. Live settings `sourcing-rules` are authoritative; these dated decisions do not replace the saved profile, current affiliations or other eligibility evidence.
+
+Implementation, installation and external-service acceptance are tracked separately in `handoff/WORKSPACE-IMPROVEMENTS-2026-11-04.md`.
+
 # October 30, 2026 — meeting responses installed in 0.9.1
 
 Version **0.9.1 (21)** is installed and signed with the existing identity. Calendar `METHOD:REPLY` and exact attendee `PARTSTAT` evidence now produce **Meeting response — Accepted / Declined / Tentative**, with a separate meeting-response counter. Accepted responses pause eligible outreach tasks, unsent drafts, sequences and queued texts. Declined/tentative responses do not trigger that acceptance pause; malformed calendar evidence is held for review. Subject wording alone does not classify an RSVP.

@@ -12,6 +12,7 @@ private struct GenericFile {
 private struct GenericPlan {
     let files: [GenericFile]
     let mappings: [Record]
+    let origin: Record
     let agents: [Record]
     let customFields: [Record]
     let digest: String
@@ -26,8 +27,8 @@ private struct GenericPlan {
 
 private enum GenericCSV {
     static let coreTargets = [
-        "name", "firstName", "lastName", "office", "city", "email", "phone", "linkedinUrl",
-        "courtedProfileURL", "mls", "mlsId", "license", "licenseRaw", "licenseJurisdiction", "licenseJurisdictionRaw", "licenseType", "licenseTypeRaw", "sourceProvider", "sourceAgentId", "brand", "officeCity",
+        "name", "firstName", "lastName", "office", "city", "email", "phone", "linkedinUrl", "sourcedAt",
+        "courtedProfileURL", "mls", "mlsId", "license", "licenseRaw", "licenseJurisdiction", "licenseJurisdictionRaw", "licenseType", "licenseTypeRaw", "sourceProvider", "sourceAgentId", "brand", "teamName", "officeCity",
         "officeZip", "mlsHomeCity", "mlsHomeZip", "years", "officeYears",
         "volume", "change", "units", "buySideVolume", "listSideVolume",
         "buySideUnits", "listSideUnits", "active", "pending", "rentals",
@@ -45,6 +46,7 @@ private enum GenericCSV {
     static let sourceOnly: Set<String> = ["sourceStatus", "sourceAssignee", "sourceLastViewedDate",
         "note1", "note2", "note3", "recentMutualAddress"]
     static let aliases: [String: String] = [
+        "sourcedat":"sourcedAt", "sourcedate":"sourcedAt", "sourcedatetime":"sourcedAt",
         "name":"name", "agentname":"name", "firstname":"firstName", "lastname":"lastName",
         "currentoffice":"office", "office":"office", "brokerage":"office", "mosttransactedcity":"city",
         "city":"city", "email":"email", "emailaddress":"email", "phone":"phone",
@@ -54,7 +56,7 @@ private enum GenericCSV {
         "mlsaffiliation":"mls", "mls":"mls", "mlsid":"mlsId", "licensenumber":"license", "license":"license",
         "licenseraw":"licenseRaw", "licensejurisdiction":"licenseJurisdiction", "licensestate":"licenseJurisdiction",
         "licensejurisdictionraw":"licenseJurisdictionRaw", "licensetype":"licenseType", "licensetyperaw":"licenseTypeRaw", "sourceprovider":"sourceProvider", "sourceagentid":"sourceAgentId",
-        "brand":"brand", "officecity":"officeCity", "officezip":"officeZip",
+        "brand":"brand", "teamname":"teamName", "currentteam":"teamName", "officecity":"officeCity", "officezip":"officeZip",
         "agentsmlshomecity":"mlsHomeCity", "agentsmlshomezip":"mlsHomeZip",
         "yearsindustry":"years", "yearsinindustry":"years", "yearsinoffice":"officeYears",
         "ltmsalesvolume":"volume", "ltmsalesvolumegrowth":"change", "units":"units",
@@ -163,6 +165,21 @@ extension Store {
 
     private func genericPlan(_ payload: Record) throws -> GenericPlan {
         let files = try GenericCSV.files(payload)
+        let importedAt = Store.now()
+        var origin: Record = ["sourceType":"csv_import","source":"CSV import"]
+        if let supplied = payload["importOrigin"] {
+            guard let input = supplied as? Record,
+                  let type = (input["sourceType"] ?? input["type"]) as? String,
+                  ["email_import","ai_agent"].contains(type) else {
+                throw StoreError(message:"Import origin must identify an email import or AI agent.")
+            }
+            origin["sourceType"] = type
+            origin["sourceActor"] = input["sourceActor"] ?? input["actor"]
+            origin["sourceReference"] = input["sourceReference"] ?? input["reference"] ?? input["messageId"]
+            origin["sourcedAt"] = input["sourcedAt"]
+            origin["source"] = type == "email_import" ? "Email import" : "AI agent — \(origin["sourceActor"] as? String ?? "")"
+        }
+        origin = try Store.validatedCandidateSource(origin,defaultType:"csv_import",now:importedAt)
         let headers = Set(files.flatMap{$0.headers})
         guard let mappings = payload["mappings"] as? [Record], mappings.count == headers.count else {
             throw StoreError(message:"Review a mapping for every CSV column.")
@@ -208,12 +225,15 @@ extension Store {
         }
         let canonicalMappings = mappings.map { byHeader[$0["header"] as! String]! }
         let mappingData = try JSONSerialization.data(withJSONObject:canonicalMappings.sorted { ($0["header"] as! String) < ($1["header"] as! String) },options:[.sortedKeys])
-        let digest = CourtedCSV.hash(Data((files.map{$0.digest}.sorted().joined(separator:"|") + "|" + CourtedCSV.hash(mappingData)).utf8))
+        let originData = try JSONSerialization.data(withJSONObject:origin,options:[.sortedKeys])
+        // Keep prior ordinary-CSV batch IDs stable; explicit origin is part of a distinct receipt.
+        let originDigest = payload["importOrigin"] == nil ? "" : "|" + CourtedCSV.hash(originData)
+        let digest = CourtedCSV.hash(Data((files.map{$0.digest}.sorted().joined(separator:"|") + "|" + CourtedCSV.hash(mappingData) + originDigest).utf8))
         let batchId = "generic-" + digest
         let existing = try all("agents")
+        let sourcingProfile: Record? = origin["sourceType"] as? String == "ai_agent" ? try sourcingRulesRecord() : nil
         var agents: [Record] = [], hard: [String] = [], newCount = 0, updateCount = 0, possible = 0
         var seen = Set<String>(), seenAgentIDs = Set<String>()
-        let importedAt = Store.now()
         for file in files { for (index,row) in file.rows.enumerated() {
             var core: Record = [:], custom: Record = [:]
             for header in file.headers {
@@ -228,6 +248,10 @@ extension Store {
                     if target.hasPrefix("core:") { core[String(target.dropFirst(5))] = NSNull() }
                     else { custom[String(target.dropFirst(7))] = NSNull() }
                 }
+            }
+            if let sourcedAt = core["sourcedAt"] as? String {
+                let validated = try Store.validatedCandidateSource(["sourceType":"csv_import","source":"CSV import","sourcedAt":sourcedAt],defaultType:"csv_import",now:importedAt)
+                core["sourcedAt"] = validated["sourcedAt"]
             }
             let first = core["firstName"] as? String ?? "", last = core["lastName"] as? String ?? ""
             if let profile = core["linkedinUrl"] as? String {
@@ -270,6 +294,22 @@ extension Store {
                 "source":"CSV import","datasetId":"live","manual":false,"status":"Identified",
                 "assignee":try operatorName(),"liked":false,"disposition":"","createdAt":importedAt,
                 "history":[],"transactions":[],"signals":[]]
+            if matches.isEmpty {
+                if let sourcingProfile = sourcingProfile {
+                    var assessment = try sourcingRuleAssessment(fields:core,asOf:Store.prospectingLocalDay(),profile:sourcingProfile)
+                    guard assessment["state"] as? String == "eligible" else {
+                        let reasons = (assessment["reasons"] as? [String] ?? []) + (assessment["missingEvidence"] as? [String] ?? [])
+                        hard.append("\(file.name) row \(index + 2): " + reasons.joined(separator:" "))
+                        continue
+                    }
+                    assessment["checkedAt"] = importedAt
+                    agent["sourcingRulesAssessment"] = assessment
+                }
+                for (key,value) in origin { agent[key] = value }
+                if agent["sourceReference"] == nil { agent["sourceReference"] = batchId + "/" + file.name }
+                // A source's stated date is separate from this local import event.
+                if agent["sourcedAt"] == nil { agent["sourcedAt"] = core["sourcedAt"] }
+            }
             if matches.isEmpty, let sourceStatus = core["sourceStatus"] as? String,
                stages.contains(sourceStatus) { agent["status"] = sourceStatus }
             do {
@@ -280,6 +320,8 @@ extension Store {
             let localOverrides = Set(agent["localOverrides"] as? [String] ?? [])
             var managed: Record = prior
             for (key,value) in core {
+                // First-acquisition provenance is immutable across later refreshes.
+                if key == "sourcedAt" { continue }
                 if key == "firstName" || key == "lastName" || AgentIdentity.fields.contains(key) { agent[key] = value; managed[key] = value; continue }
                 if key == "move", let move = value as? String { let norm = move.capitalized; coreValue(&agent,key:key,value:norm,prior:prior,managed:&managed,localOverrides:localOverrides); continue }
                 if GenericCSV.sourceOnly.contains(key) { agent[key] = value; managed[key] = value; continue }
@@ -310,9 +352,13 @@ extension Store {
         } }
         let workspaceData = try JSONSerialization.data(withJSONObject:existing,options:[.sortedKeys])
         let customsData = try JSONSerialization.data(withJSONObject:existingCustom,options:[.sortedKeys])
-        let token = CourtedCSV.hash(Data("\(digest)|\(CourtedCSV.hash(workspaceData))|\(CourtedCSV.hash(customsData))".utf8))
+        let sourcingToken: String
+        if let profile = sourcingProfile {
+            sourcingToken = "|" + CourtedCSV.hash(try JSONSerialization.data(withJSONObject:profile,options:[.sortedKeys]))
+        } else { sourcingToken = "" }
+        let token = CourtedCSV.hash(Data("\(digest)|\(CourtedCSV.hash(workspaceData))|\(CourtedCSV.hash(customsData))\(sourcingToken)".utf8))
         let imported = try all("importBatches").contains { $0["id"] as? String == batchId }
-        return GenericPlan(files:files,mappings:canonicalMappings,agents:agents,customFields:created,digest:digest,
+        return GenericPlan(files:files,mappings:canonicalMappings,origin:origin,agents:agents,customFields:created,digest:digest,
             token:token,newCount:newCount,updateCount:updateCount,hardConflicts:hard,possibleMatches:possible,
             alreadyImported:imported,existingCount:existing.count)
     }
@@ -371,11 +417,11 @@ extension Store {
                 agent["lastImportedAt"] = importedAt
                 try put("agents", agent)
                 try recordContactEvent(agentId: id, type: isNew ? "contact.imported" : "contact.import_updated",
-                    source: "CSV import", sourceRecordId: GenericCSV.identityKeys(agent).first ?? id,
+                    source: plan.origin["source"] as? String ?? "CSV import", sourceRecordId: GenericCSV.identityKeys(agent).first ?? id,
                     batchId: batchId, fileNames: [agent["sourceFileName"] as? String ?? ""],
                     occurredAt: importedAt, recordedAt: importedAt, dedupeKey: "import:" + batchId)
             }
-            try put("importBatches",["id":batchId,"source":"CSV import","fileNames":plan.files.map{$0.name},
+            try put("importBatches",["id":batchId,"source":"CSV import","importOrigin":plan.origin,"fileNames":plan.files.map{$0.name},
                 "fileDigest":plan.digest,"rows":plan.agents.count,"newAgents":plan.newCount,
                 "updateAgents":plan.updateCount,"createdCustomFieldIds":plan.customFields.compactMap{$0["id"] as? String},
                 "backupPath":backup,"importedAt":importedAt,"schemaVersion":1])

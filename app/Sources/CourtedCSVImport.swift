@@ -98,7 +98,7 @@ enum CourtedCSV {
             "id":"courted-" + String(hash(Data(profile.utf8)).prefix(32)), "name":name,
             "office":value("Current Office"), "city":value("Most Transacted City"),
             "email":value("Email"), "phone":value("Phone"), "status":status,
-            "source":"Courted CSV export", "datasetId":"live", "manual":false,
+            "source":"Courted CSV export", "sourceType":"courted_import", "sourceReference":batchId + "/" + profile, "datasetId":"live", "manual":false,
             "identityReviewState":"unreviewed", "sourceBatchId":batchId,
             "sourceExportDate":"unknown", "sourceMetricCutoff":"unknown",
             "importedAt":importedAt, "createdAt":importedAt, "liked":false, "disposition":"",

@@ -25,6 +25,8 @@ struct PilotRecordTests {
         call.append("requested", at: now)
         try journal.save(call)
         call.telnyxSessionID = UUID().uuidString
+        precondition((try? PilotJournal(url: file))?.records.first?.operatorConfirmedTestConsent == nil)
+        call.operatorConfirmedTestConsent = true
         try journal.save(call)
         precondition(journal.records.count == 1, "Repeated events must update the same call")
         let restored = try PilotJournal(url: file)
@@ -33,6 +35,7 @@ struct PilotRecordTests {
         precondition(restored.records[0].endedAt == nil, "Restart must not invent a remote hangup time")
         precondition(restored.records[0].recoveryObservedAt != nil)
         precondition(restored.records[0].providerRecording == "unverified")
+        precondition(restored.records[0].operatorConfirmedTestConsent == true)
         let json = try PilotJournal.export(call)
         precondition(json.contains("telnyxSessionID"))
         try Data("invalid".utf8).write(to: file)

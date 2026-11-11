@@ -39,6 +39,8 @@ func runGenericImportTests() throws {
     let receipt = try store.commitGenericImport(commitInput)
     try check(receipt["newAgents"] as? Int == 1,"commit creates one contact")
     let first = try store.all("agents")[0]
+    try check(first["sourceType"] as? String == "csv_import" && !(first["sourceReference"] as? String ?? "").isEmpty,"CSV acquisition automatically carries origin and batch/file reference")
+    try check(first["sourcedAt"] == nil,"unknown CSV source date is not invented from import time")
     try check(first["volume"] as? Double == 0,"numeric zero is retained")
     try check(first["status"] as? String == "Called","valid source status initializes a new contact")
     try check(first["sourceStatus"] as? String == "Called","original source status remains separate")
@@ -77,6 +79,7 @@ func runGenericImportTests() throws {
     changedCommit["token"] = try store.previewGenericImport(changedInput)["token"]
     _ = try store.commitGenericImport(changedCommit)
     let updated = try store.all("agents")[0]
+    try check(updated["createdAt"] as? String == first["createdAt"] as? String && updated["sourceReference"] as? String == first["sourceReference"] as? String && updated["sourcedAt"] == nil,"refresh preserves original added time and acquisition provenance")
     try check(updated["importedAt"] as? String == "2025-01-02T03:04:05Z","first import timestamp survives reimport")
     try check(updated["lastImportedAt"] as? String != updated["importedAt"] as? String,"latest import timestamp is separately recorded")
     try check(updated["office"] as? String == "Erin corrected office","user correction survives reimport")
@@ -168,4 +171,74 @@ func runGenericImportTests() throws {
     }
     try check(try enrichmentStore.get("agents",enrichedID)["linkedinUrl"] as? String == "https://www.linkedin.com/in/fixture-enrichment/",
               "invalid LinkedIn update does not change the saved record")
+    // Email/agent intake carries its actual origin; payload changes invalidate preview.
+    let originCSV = root.appendingPathComponent("origin.csv")
+    let originText = "Name,Courted Profile URL,Source date\nOrigin Fixture,https://brokerage.courted.io/agents/origin,2025-04-12\n"
+    try Data(originText.utf8).write(to:originCSV)
+    let originMappings:[Record] = [
+        ["header":"Name","target":"core:name","label":"Name","type":"text"],
+        ["header":"Courted Profile URL","target":"core:courtedProfileURL","label":"Courted Profile URL","type":"text"],
+        ["header":"Source date","target":"core:sourcedAt","label":"Source date","type":"text"]]
+    let originStore = try Store(path:root.appendingPathComponent("origins.sqlite").path,seed:false)
+    let originInput:Record = ["paths":[originCSV.path],"mappings":originMappings,"importOrigin":["type":"email_import","messageId":"gmail:fixture-17","sourcedAt":"2025-04-10T15:30:00Z"]]
+    let originPreview = try originStore.previewGenericImport(originInput)
+    var staleOrigin = originInput
+    staleOrigin["token"] = originPreview["token"]
+    staleOrigin["importOrigin"] = ["type":"email_import","messageId":"gmail:different"]
+    do { _ = try originStore.commitGenericImport(staleOrigin); throw StoreError(message:"Changed origin unexpectedly passed.") }
+    catch let error as StoreError { guard error.message != "Changed origin unexpectedly passed." else { throw error } }
+    var originCommit = originInput;originCommit["token"] = originPreview["token"]
+    _ = try originStore.commitGenericImport(originCommit)
+    let emailLead = try originStore.all("agents")[0]
+    try check(emailLead["sourceType"] as? String == "email_import" && emailLead["sourceReference"] as? String == "gmail:fixture-17" && emailLead["sourcedAt"] as? String == "2025-04-10T15:30:00Z","email import stores exact message origin/time distinct from file row date and added time")
+    let acquired = emailLead["sourcedAt"] as? String
+    try Data(originText.replacingOccurrences(of:"2025-04-12",with:"2025-05-12").utf8).write(to:originCSV)
+    var refreshInput:Record = ["paths":[originCSV.path],"mappings":originMappings]
+    refreshInput["token"] = try originStore.previewGenericImport(refreshInput)["token"]
+    _ = try originStore.commitGenericImport(refreshInput)
+    let refreshedEmail = try originStore.all("agents")[0]
+    try check(refreshedEmail["sourceType"] as? String == "email_import" && refreshedEmail["sourcedAt"] as? String == acquired && refreshedEmail["createdAt"] as? String == emailLead["createdAt"] as? String,"later CSV refresh cannot relabel an email-acquired lead")
+    let aiStore = try Store(path:root.appendingPathComponent("ai-origin.sqlite").path,seed:false)
+    var aiInput:Record = ["paths":[originCSV.path],"mappings":originMappings,"importOrigin":["type":"ai_agent","actor":"Research Agent","reference":"run:fixture-18"]]
+    aiInput["token"] = try aiStore.previewGenericImport(aiInput)["token"]
+    _ = try aiStore.commitGenericImport(aiInput)
+    let aiLead = try aiStore.all("agents")[0]
+    try check(aiLead["sourceType"] as? String == "ai_agent" && aiLead["sourceActor"] as? String == "Research Agent" && aiLead["sourcedAt"] as? String == "2025-05-12","AI source records agent attribution and preserves explicit day-only source precision")
+    aiInput["importOrigin"] = ["type":"ai_agent","reference":"run:missing-agent"]
+    do { _ = try aiStore.previewGenericImport(aiInput);throw StoreError(message:"Missing AI actor unexpectedly passed.") }
+    catch let error as StoreError {guard error.message != "Missing AI actor unexpectedly passed." else {throw error}}
+    try Data(originText.replacingOccurrences(of:"2025-04-12",with:"2025-02-30").utf8).write(to:originCSV)
+    do { _ = try originStore.previewGenericImport(refreshInput);throw StoreError(message:"Malformed source date unexpectedly passed.") }
+    catch let error as StoreError {guard error.message != "Malformed source date unexpectedly passed." else {throw error}}
+
+    let gateStore = try Store(path:root.appendingPathComponent("ai-import-gate.sqlite").path,seed:false)
+    let gateCSV = root.appendingPathComponent("ai-gated.csv")
+    let gateMappings:[Record] = [
+        ["header":"Name","target":"core:name","label":"Name","type":"text"],
+        ["header":"Courted Profile URL","target":"core:courtedProfileURL","label":"Courted Profile URL","type":"text"],
+        ["header":"Office","target":"core:office","label":"Office","type":"text"],
+        ["header":"Team","target":"core:teamName","label":"Team","type":"text"]]
+    var gateInput:Record = ["paths":[gateCSV.path],"mappings":gateMappings,"importOrigin":["type":"ai_agent","actor":"Research Agent","reference":"run:gate"]]
+    _ = try gateStore.command("sourcingRules.save",["schemaVersion":1,"expectedRevision":0,"name":"Fixture exclusions","excludedBrokerages":["Blocked Realty"],"excludedTeams":["Blocked Team"]])
+    let gateHeader = "Name,Courted Profile URL,Office,Team\n"
+    try Data((gateHeader + "Excluded Fixture,https://brokerage.courted.io/agents/gate,Blocked Realty,Other Team\n").utf8).write(to:gateCSV)
+    try check(try gateStore.previewGenericImport(gateInput)["hardConflicts"] as? Int == 1,"AI CSV intake cannot bypass exact brokerage exclusion")
+    try Data((gateHeader + "Unknown Team Fixture,https://brokerage.courted.io/agents/gate,Allowed Realty,\n").utf8).write(to:gateCSV)
+    try check(try gateStore.previewGenericImport(gateInput)["hardConflicts"] as? Int == 1,"AI CSV intake holds missing current team affiliation when team exclusions are active")
+    try Data((gateHeader + "Allowed Fixture,https://brokerage.courted.io/agents/gate,Allowed Realty,Other Team\n").utf8).write(to:gateCSV)
+    gateInput["token"] = try gateStore.previewGenericImport(gateInput)["token"]
+    _ = try gateStore.command("sourcingRules.save",["schemaVersion":1,"expectedRevision":1,"name":"Changed exclusions","excludedBrokerages":["Blocked Realty","Allowed Realty"],"excludedTeams":["Blocked Team"]])
+    do { _ = try gateStore.commitGenericImport(gateInput);throw StoreError(message:"Changed ICP unexpectedly passed.") }
+    catch let error as StoreError {guard error.message != "Changed ICP unexpectedly passed." else {throw error}}
+    try check(try gateStore.all("agents").isEmpty,"changed profile invalidates AI preview without creating contacts")
+    _ = try gateStore.command("sourcingRules.save",["schemaVersion":1,"expectedRevision":2,"name":"Allowed again","excludedBrokerages":["Blocked Realty"],"excludedTeams":["Blocked Team"]])
+    gateInput["token"] = try gateStore.previewGenericImport(gateInput)["token"]
+    _ = try gateStore.commitGenericImport(gateInput)
+    let gatedAgent = try gateStore.all("agents")[0]
+    let savedAssessment = gatedAgent["sourcingRulesAssessment"] as? Record ?? [:]
+    try check(savedAssessment["rulesRevision"] as? Int == 3 && savedAssessment["checkedAt"] is String,"AI import records actual audience revision and checked time")
+    _ = try gateStore.command("sourcingRules.save",["schemaVersion":1,"expectedRevision":3,"name":"Exclude existing affiliation","excludedBrokerages":["Allowed Realty"],"excludedTeams":["Blocked Team"]])
+    try Data((gateHeader + "Allowed Fixture,https://brokerage.courted.io/agents/gate,Allowed Realty,Other Team\n").replacingOccurrences(of:"Other Team",with:"Changed Team").utf8).write(to:gateCSV)
+    try check(try gateStore.previewGenericImport(gateInput)["hardConflicts"] as? Int == 0,"existing contacts remain refreshable without applying a new-contact sourcing gate")
+
 }

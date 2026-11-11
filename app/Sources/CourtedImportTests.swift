@@ -33,6 +33,8 @@ func runCourtedImportTests() throws {
     let imported = try store.all("agents").filter { $0["datasetId"] as? String == "live" }
     try check(imported.count == 1,"sample and live records remain separate")
     let agent = imported[0], original = agent["courtedFields"] as? [String:String] ?? [:]
+    try check(agent["sourceType"] as? String == "courted_import" && (agent["sourceReference"] as? String ?? "").contains(source["Courted Profile URL"]!),"Courted intake records source type and batch/profile reference")
+    try check(agent["sourcedAt"] == nil,"unknown export date is not replaced by the local import timestamp")
     try check(agent["status"] as? String == "Not interested","source exclusion status preserved")
     try check(agent["mlsId"] as? String == "00042" && agent["license"] as? String == "001234","identity text retains zeroes")
     try check(agent["units"] as? Double == 0 && agent["buySideUnits"] as? Double == 0.5,"zero and fractional units preserved")

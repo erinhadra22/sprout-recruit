@@ -82,6 +82,18 @@ func runGmailSyncCoordinatorTests() throws {
     var explicitResults:[Bool]=[];coordinator.scan{explicitResults.append($0)}
     try check(requests.count==enabledCount+2,"explicit scan bypasses the next automatic deadline")
     try deliver(page(requests.last!));try check(explicitResults==[true],"explicit scan completes once after persistence")
+    let beforePending = try store.gmailSyncStatus()
+    let pendingTaskCount = try store.all("tasks").count
+    var pendingGrants: [Bool] = []
+    coordinator.scan { pendingGrants.append($0) }
+    callbacks.removeFirst()(.failure(GmailAPIError(code:"keychain_read_pending",message:"Saved connection read is pending.")))
+    drain()
+    try check(pendingGrants == [false] && !coordinator.running,"a pending credential read fails closed for sends without holding UI work")
+    try check(NSDictionary(dictionary:try store.gmailSyncStatus()).isEqual(to:beforePending),"pending credential read preserves sync state, approved window, coverage and cursor")
+    try check(try store.all("tasks").count == pendingTaskCount,"ordinary background credential loading creates no phantom attention task")
+    coordinator.scan()
+    try deliver(page(requests.last!))
+    try check(!coordinator.running,"credential readiness can retry and finish the same saved scope")
     print("PASS: Gmail coordinator scope catch-up, idle deadlines, cancellation, busy barriers, no overlap, cursor retention and fresh pre-send grants; no network or live data.")
 }
 

@@ -15,6 +15,7 @@ final class GmailOAuth {
     // The native app can persist these bounded stages across WebKit navigation.
     // Never pass URLs, provider text, codes, account addresses or credentials.
     var onEvent: ((String,String?) -> Void)?
+    var onCredentialReadReady: (() -> Void)?
     private enum ConnectStage { case idle, authorization, token, profile }
     private var connectStage: ConnectStage = .idle
     private let requiredScopes: Set<String>
@@ -33,13 +34,16 @@ final class GmailOAuth {
         let vault = GmailOAuthKeychain(workspacePath:workspacePath,service:keychainService)
         self.requiredScopes=scopes
         self.client = client
+        var fallback: GmailOAuthKeychain?
         if keychainService == "com.sprout-recruit.gmail.oauth" { load=vault.load }
-        else { let existing=GmailOAuthKeychain(workspacePath:workspacePath);load={
+        else { let existing=GmailOAuthKeychain(workspacePath:workspacePath);fallback=existing;load={
             if let saved=try vault.load(){return saved}
             guard let config=try existing.load() else{return nil}
             var result:Record=[:];for key in ["clientID","clientSecret"]{result[key]=config[key]};return result
         } }
         save = vault.save; run = GmailHTTPTransport.run;authorize=nil
+        vault.onReady = { [weak self] in self?.onCredentialReadReady?() }
+        fallback?.onReady = { [weak self] in self?.onCredentialReadReady?() }
     }
     // Disposable fixtures inject memory storage and HTTP responses; no real
     // Keychain/browser/listener is accessed by those tests.
@@ -232,6 +236,15 @@ final class GmailOAuth {
 private final class GmailOAuthKeychain {
     private let account:String
     private let service:String
+    var onReady: (() -> Void)?
+    private lazy var reader: NonblockingCredentialRead = {
+        let cache = NonblockingCredentialRead(operation: { [weak self] in
+            guard let self else { throw GmailAPIError(code:"keychain_unavailable",message:"The saved connection is unavailable.") }
+            return try self.readStoredValue()
+        })
+        cache.onReady = { [weak self] in self?.onReady?() }
+        return cache
+    }()
     init(workspacePath:String,service:String = "com.sprout-recruit.gmail.oauth") {
         self.service=service
         let path=URL(fileURLWithPath:workspacePath).standardizedFileURL.resolvingSymlinksInPath().path
@@ -241,13 +254,18 @@ private final class GmailOAuthKeychain {
         let context=LAContext();context.interactionNotAllowed=true
         return [kSecClass as String:kSecClassGenericPassword,kSecAttrService as String:service,kSecAttrAccount as String:account,kSecUseAuthenticationContext as String:context]
     }
-    func load() throws -> Record? {
+    // Never wait for Security IPC on the calling (often UI) thread. Pending and
+    // failed reads remain explicit errors; they cannot impersonate missing keys.
+    func load() throws -> Record? { try reader.load() }
+    private func readStoredValue() throws -> Record? {
         var q=query;q[kSecReturnData as String]=true;q[kSecMatchLimit as String]=kSecMatchLimitOne
         var result:CFTypeRef?;let code=SecItemCopyMatching(q as CFDictionary,&result)
         if code==errSecItemNotFound { return nil }
         guard code==errSecSuccess,let data=result as? Data,data.count<=65536,let value=try JSONSerialization.jsonObject(with:data) as? Record else { throw GmailAPIError(code:"keychain_unavailable",message:"Sprout could not read its Gmail connection from this Mac's Keychain.") };return value
     }
     func save(_ value:Record?) throws {
+        reader.invalidate()
+        defer { reader.invalidate() }
         guard let value else { let code=SecItemDelete(query as CFDictionary);guard code==errSecSuccess || code==errSecItemNotFound else { throw GmailAPIError(code:"keychain_unavailable",message:"Sprout could not remove its Gmail connection from Keychain.") };return }
         let data=try JSONSerialization.data(withJSONObject:value)
         let attrs:[String:Any]=[kSecValueData as String:data,kSecAttrAccessible as String:kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]

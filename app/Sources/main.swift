@@ -27,13 +27,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
     lazy var messagesSync = MessagesSyncCoordinator(store:store)
     lazy var gmailOAuth: GmailOAuth = {
         let auth=GmailOAuth(workspacePath:store.path)
+        auth.onCredentialReadReady = { [weak self] in self?.credentialReadReady() }
         auth.onEvent = { [weak self] stage,code in
             guard let self else { return }
             GmailConnectionDiagnostics.record(databasePath:self.store.path,stage:stage,code:code)
         }
         return auth
     }()
-    lazy var calendar = CalendarController(store:store)
+    lazy var calendar: CalendarController = {
+        let controller = CalendarController(store:store)
+        controller.storeAvailable = { [weak self] in self?.storeBusy == false }
+        return controller
+    }()
     lazy var gmailClient = GmailAPIClient()
     lazy var gmailSync = GmailSyncCoordinator(store:store) { [weak self] request, completion in
         guard let self = self else { completion(.failure(StoreError(message:"Workspace closed."))); return }
@@ -52,6 +57,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         available: { [weak self] in self?.storeBusy == false })
     private func checkRepliesForDispatch(completion:@escaping (Bool)->Void) {
         replySyncDispatchGate.check(completion:completion)
+    }
+    private var credentialRetryScheduled = false
+    private func credentialReadReady() {
+        guard !credentialRetryScheduled else { return }
+        credentialRetryScheduled = true
+        resumeAfterCredentialRead()
+    }
+    private func resumeAfterCredentialRead() {
+        if storeBusy {
+            DispatchQueue.main.asyncAfter(deadline:.now()+0.2) { [weak self] in self?.resumeAfterCredentialRead() }
+            return
+        }
+        credentialRetryScheduled = false
+        // The coordinator, Store and OAuth state remain on the main queue.
+        // This retry reads the completed cache and preserves the saved cursor.
+        gmailSync.scan()
+        web?.evaluateJavaScript("window.dispatchEvent(new Event('sprout-gmail-sync'))",completionHandler:nil)
     }
     private var gmailConnectionEpoch: UInt64 = 0
     private var gmailConnecting = false
@@ -230,13 +252,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
         startupStage("outbox.start.end")
         messagesSync.start()
         startupStage("messages.start.end")
-        gmailSync.start()
-        startupStage("gmail.start.end")
         window.center(); window.makeKeyAndOrderFront(nil)
         startupStage("web.load.begin")
         let navigation=web.loadFileURL(resources.appendingPathComponent("index.html"),allowingReadAccessTo:resources)
         startupStage("web.load.requested",["accepted":String(navigation != nil)])
         NSApp.activate(ignoringOtherApps:true)
+        gmailSync.start()
+        startupStage("gmail.start.end")
     }
     @objc func showWorkspace() {
         guard window != nil else { return }
@@ -300,9 +322,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
               let request = message.body as? Record, let action = request["action"] as? String else { replyHandler(nil,"Only the bundled app can access local records."); return }
         let p = request["payload"] as? Record ?? [:]
         guard !storeBusy else { replyHandler(nil,"A workspace operation is in progress. Please wait.");return }
-        if action.hasPrefix("calendar.") || ["meetings.book","meetings.reconcile"].contains(action) {
-            storeBusy=true
-            calendar.handle(action,p) { value,error in self.storeBusy=false;replyHandler(value,error) }
+        if action.hasPrefix("calendar.") || ["meetings.book","meetings.reconcile","meetings.refresh"].contains(action) {
+            // Google consent may remain open for minutes. Only booking actions
+            // need the workspace barrier across their provider request.
+            let locksWorkspace = action.hasPrefix("meetings.")
+            if locksWorkspace { storeBusy=true }
+            calendar.handle(action,p) { value,error in
+                if locksWorkspace { self.storeBusy=false }
+                self.web?.evaluateJavaScript("window.dispatchEvent(new Event('sprout-calendar-sync'))",completionHandler:nil)
+                replyHandler(value,error)
+            }
             return
         }
         if action.hasPrefix("gmailSync.") { gmailAction(action,p,replyHandler); return }

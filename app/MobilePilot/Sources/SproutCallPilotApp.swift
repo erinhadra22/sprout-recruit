@@ -38,8 +38,8 @@ struct PilotView: View {
                     TextField("Your verified number · +1…", text: $calls.callerNumber).keyboardType(.phonePad)
                     TextField("Test recipient · +1…", text: $calls.destination).keyboardType(.phonePad)
                     Toggle("Two-track recording is set up in Telnyx", isOn: $calls.recordingConfigured)
-                    Toggle("My test recipient is ready for a recorded call", isOn: $calls.recipientReady)
-                    Text("These confirmations prepare the test. They do not verify that a recording exists.")
+                    Toggle("This test recipient agreed to be recorded", isOn: $calls.recipientReady)
+                    Text("Confirm consent before each test call. Afterward, check the provider recording for both voices.")
                         .font(.footnote).foregroundStyle(.secondary)
                     Button { calls.placeCall() } label: {
                         Label("Call test recipient", systemImage: "phone.fill").frame(maxWidth: .infinity)

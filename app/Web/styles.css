@@ -54,3 +54,20 @@
 .outbox-highlight{outline:3px solid #85bdaa;outline-offset:3px}
 
 .button.danger{color:#a02626;border-color:#e6b8b8;background:#fff7f7}.button.danger:hover{background:#ffecec}
+
+/* Daily team calls come from explicit saved tasks, never a generated score. */
+.team-call-section{margin:0 0 28px}
+.team-call-section .section-head{gap:16px;align-items:flex-start}
+.team-call-section .section-head .sub{margin-top:7px}
+.team-call-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin:14px 0}
+.team-call-card{min-width:0;padding:18px;overflow-wrap:anywhere}
+.team-call-card .between{gap:12px;align-items:flex-start}
+.team-call-card h3{font-size:16px;line-height:1.35}
+.team-call-card .badge{white-space:nowrap;flex-shrink:0}
+.team-call-contact{margin:12px 0 5px;font-size:13px;line-height:1.5}
+.team-call-objective{font-size:12px;line-height:1.6;white-space:pre-line;margin:12px 0}
+.team-call-actions{flex-wrap:wrap;margin-top:15px;gap:8px}
+.team-call-review{margin:16px 0}
+.team-call-review>summary{cursor:pointer;font-weight:600;color:var(--green)}
+.team-call-review>.hint{margin-top:10px}
+@media(max-width:420px){.team-call-grid{grid-template-columns:minmax(0,1fr)}.team-call-card .between{flex-wrap:wrap}}

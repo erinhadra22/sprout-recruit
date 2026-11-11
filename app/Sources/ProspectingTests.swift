@@ -52,6 +52,12 @@ private func runProspectingInterimTests() throws {
     try check(!(try store!.previewProspecting(payload([malformed]))["hardConflicts"] as! [String]).isEmpty,"malformed date is a hard source-data conflict")
     malformed=row;malformed["originalLicenseDateRaw"]="01/01/2000"
     try check(!(try store!.previewProspecting(payload([malformed]))["hardConflicts"] as! [String]).isEmpty,"parseable raw and canonical license dates must agree")
+    var aiPreviewInput=payload([row]),aiSource=aiPreviewInput["source"] as! Record
+    aiSource["sourceType"]="ai_agent";aiSource["sourceActor"]="Research Agent";aiSource["sourcedAt"]="2025-04-10T15:30:00Z";aiPreviewInput["source"]=aiSource
+    let aiPreview=try store!.previewProspecting(aiPreviewInput),aiPreviewSource=(aiPreview["rows"] as! [Record])[0]["source"] as! Record
+    try check(aiPreviewSource["sourceType"] as? String=="ai_agent" && aiPreviewSource["sourceActor"] as? String=="Research Agent" && aiPreviewSource["sourcedAt"] as? String=="2025-04-10T15:30:00Z","AI discovery keeps actor and source time separately from provider checked day")
+    aiSource.removeValue(forKey:"sourceActor");aiPreviewInput["source"]=aiSource
+    try fails{_=try store!.previewProspecting(aiPreviewInput)}
     let ids=try stage([row]),id=ids[0]
     let savedRevision=try store!.get("discoveryProspects",id)["revision"] as! Int
     try setMode("full_production")
@@ -62,6 +68,7 @@ private func runProspectingInterimTests() throws {
     try accept(ids)
     let agent=try store!.all("agents").first!,aid=agent["id"] as! String
     try check(agent["status"] as? String=="Identified" && agent["volume"]==nil && agent["years"]==nil && (try store!.all("performance")).isEmpty,"interim intake invents neither production nor continuous experience")
+    try check(agent["sourceType"] as? String=="provider_import" && agent["sourceReference"] as? String=="fixture://interim/roster" && agent["sourcedAt"] as? String==today,"discovery intake retains provider source and explicit checked day without inventing a source time")
     let admission=agent["recruitingEligibility"] as! Record
     try check(admission["state"] as? String=="interim_eligible" && admission["scope"] as? String=="at_intake" && admission["productionThresholdMet"] as? Bool==false,"admission metadata is explicitly interim and dated")
     let e=try store!.get("prospectingEvidence",aid)
